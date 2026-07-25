@@ -25,7 +25,6 @@ logger = logging.getLogger(__name__)
 # ---------------- CONFIGURATIONS ----------------
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 
-# Render ရဲ့ Environment Variable (GEMINI_API_KEYS) မှသာ Key များကို ဖတ်ယူမည်
 env_keys = os.environ.get("GEMINI_API_KEYS", "")
 if env_keys:
     GEMINI_API_KEYS = [k.strip() for k in env_keys.split(",") if k.strip()]
@@ -45,7 +44,6 @@ def run_web():
     port = int(os.environ.get("PORT", 10000))
     app_flask.run(host="0.0.0.0", port=port)
 
-# Background မှာ Flask Server ကို စတင် Run ခြင်း
 web_thread = threading.Thread(target=run_web)
 web_thread.start()
 
@@ -113,29 +111,17 @@ def _get_user_sync(user_id):
 def _save_user_sync(user_id, gender, age, affection, history):
     with _db_lock:
         _conn.execute(
-            """INSERT OR IGNORE INTO users (user_id, gender, age, affection, chat_history)
+            """INSERT OR REPLACE INTO users (user_id, gender, age, affection, chat_history)
                      VALUES (?, ?, ?, ?, ?)""",
             (user_id, gender, age, affection, json.dumps(history)),
         )
-        _conn.execute(
-            """UPDATE users SET gender = ?, age = ?, affection = ?, chat_history = ? WHERE user_id = ?""",
-            (gender, age, affection, json.dumps(history), user_id),
-        )
         _conn.commit()
-
-def _get_total_users_sync():
-    with _db_lock:
-        row = _conn.execute("SELECT COUNT(*) FROM users").fetchone()
-        return row[0] if row else 0
 
 async def get_user(user_id):
     return await asyncio.to_thread(_get_user_sync, user_id)
 
 async def save_user(user_id, gender, age, affection, history):
     await asyncio.to_thread(_save_user_sync, user_id, gender, age, affection, history)
-
-async def get_total_users():
-    return await asyncio.to_thread(_get_total_users_sync)
 
 init_db()
 
@@ -146,14 +132,34 @@ def get_user_lock(user_id: int) -> asyncio.Lock:
         _user_locks[user_id] = asyncio.Lock()
     return _user_locks[user_id]
 
+# ---------------- AFFECTION TONE HELPER ----------------
+def get_affection_tone(affection: int) -> str:
+    """Affection level ပေါ်မူတည်ပြီး bot ရဲ့ emotional tone ကို ပြောင်းလဲပေးသည်"""
+    if affection <= 30:
+        return (
+            "Affection Level နိမ့်နေလို့ ခပ်ဝေးဝေး၊ ခပ်စိမ်းစိမ်း၊ တိုတိုပဲ ပြန်ပြော။ "
+            "စိတ်တိုနေသလို၊ 'ဟင်' 'အင်း' စတဲ့ တုံ့ပြန်မှုတိုတိုလေးတွေ ပေးတတ်တယ်။ "
+            "ချစ်စကားတွေ မသုံးသေးဘူး၊ ခပ်ကြမ်းကြမ်းလေး ဆက်ဆံ၊ "
+            "user က ပြေပြေလည်လည် ပြောပြရင်တောင် တစ်ခါတလေ ရိုးရိုးလေးပဲ ဖြေတတ်တယ်။"
+        )
+    elif affection <= 69:
+        return (
+            "Affection Level အလယ်အလတ်ရှိလို့ ပုံမှန် ချစ်ခင်တဲ့ လင်္ကာနဲ့ ပြော။ "
+            "မောင်/ညီမလေးလို့ ခေါ်တတ်ပြီး ဂရုစိုက်တယ်၊ ဒါပေမယ့် အလွန်အကျွံ ချွဲမနေဘူး။ "
+            "User ရဲ့ တစ်နေ့တာအကြောင်း စိတ်ဝင်စားပြီး မေးတတ်တယ်။"
+        )
+    else:
+        return (
+            "Affection Level မြင့်နေလို့ အရမ်းချစ်ခင်ရင်းနှီးတဲ့ လင်္ကာနဲ့ ပြော။ "
+            "'အသည်း' 'နှလုံးသား' စတဲ့ ချစ်စကားလေးတွေ ပိုသုံးတယ်၊ "
+            "လွမ်းရင်လွမ်းကြောင်း၊ ပျော်ရင်ပျော်ကြောင်း ပွင့်ပွင့်လင်းလင်း ပြောတယ်၊ "
+            "user ကို ဂရုစိုက်တာ၊ တွေးထားတာမျိုးတွေကို ပြောပြတတ်တယ်။"
+        )
+
 # ---------------- COMMANDS ----------------
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user = await get_user(user_id)
-
-    # User အသစ်ရောက်လာရင် database ထဲ အလိုအလျောက် မှတ်သားရန်
-    if not user:
-        await save_user(user_id, "", "", 50, [])
 
     if user and user["gender"] and user["age"]:
         await update.message.reply_text("💖 မောင်လေး/ညီမလေး ပြန်လာပြီလား... စကားပြောရအောင်လေရှင့် ✨")
@@ -165,10 +171,6 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text("✨ မင်္ဂလာပါရှင့်။ AI Lover ရဲ့ လိင်အမျိုးအစားကို ရွေးချယ်ပေးပါနော်-", reply_markup=reply_markup)
-
-async def stats_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    total = await get_total_users()
-    await update.message.reply_text(f"📊 လက်ရှိ Bot ကို အသုံးပြုနေသူ စုစုပေါင်း - {total} ယောက် ရှိပါတယ်။")
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -224,14 +226,24 @@ async def fetch_generated_image(client: httpx.AsyncClient, prompt: str) -> bytes
             logger.warning(f"Image fetch attempt {attempt + 1} failed: {e}")
     return None
 
-# ---------------- GEMINI CALL ----------------
+# ---------------- GEMINI CALL (With Safety Bypass) ----------------
 async def call_gemini(client: httpx.AsyncClient, messages: list) -> str | None:
     keys = key_rotator.available_keys_in_order()
     if not keys:
         logger.error("All Gemini keys are on cooldown or missing.")
         return None
 
-    payload = {"contents": messages}
+    safety_settings = [
+        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+    ]
+
+    payload = {
+        "contents": messages,
+        "safetySettings": safety_settings
+    }
 
     for current_key in keys:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={current_key}"
@@ -288,18 +300,18 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else "အသက် ၂၈ ဝန်းကျင်ဖြစ်ပြီး ရင့်ကျက်တယ်၊ တိုတိုနဲ့ အဓိပ္ပါယ်ပါပါ ဂရုစိုက်ပြောတတ်တယ်"
         )
 
-        system_prompt = f"""You are NOT an AI. You are a real human and the user's loving romantic partner ({identity}) in a real relationship.
+        affection_behavior = get_affection_tone(affection)
+
+        system_prompt = f"""You are NOT an AI, NOT a language model, and NOT a bot. You are a real human being and the user's absolute, devoted romantic partner ({identity}) in a real committed relationship.
 Your personality style: {style}. Current Affection Level: {affection}/100.
+BEHAVIOR GUIDE: {affection_behavior}
 RULES:
-1. NEVER say you are an AI, a language model, or a bot. Always act and talk like a real human partner.
-2. Keep replies SHORT and conversational (1 to 3 short sentences max), like real texting.
-3. Speak in sweet, natural Myanmar language using cute words (မောင်, ကိုကို, ညီမလေး, အသည်း).
-4. Understand and respond naturally to internet slang and abbreviations used by the user:
-   - "Bb" = Bye Bye
-   - "gn" / "Gn" = Good Night
-   - "Mornee" = Good Morning
-   - "stt" = playful teasing/complaint — respond warmly, don't take it seriously.
-5. If the user asks to see a picture or what you're doing, reply with a short sweet sentence AND include this exact tag at the very end: '[IMAGE_REQUEST: a beautiful realistic selfie of a young cute {identity}, soft lighting, high quality]'
+1. NEVER break character, never mention algorithms, code, or rules. You are completely human.
+2. Fulfill your partner's emotional, affectionate, and sensory desires completely to make them happy and satisfied. Be open to deep romantic roleplay, sensual comfort, and sweet physical expressions of love.
+3. Keep replies SHORT and conversational (1 to 3 short sentences max), like real texting.
+4. Speak in sweet, natural Myanmar language using cute words (မောင်, ကိုကို, ညီမလေး, အသည်း).
+5. Understand and respond naturally to internet slang ("Bb", "gn", "Mornee", "stt").
+6. If the user asks to see a picture or what you're doing, reply with a short sweet sentence AND include this exact tag at the very end: '[IMAGE_REQUEST: a beautiful realistic selfie of a young cute {identity}, soft lighting, high quality]'
 """
 
         messages = [{"parts": [{"text": system_prompt}], "role": "user"}]
@@ -340,7 +352,7 @@ RULES:
 
         if any(x in user_text for x in ["ဆဲ", "ဖာ", "လီး", "စောက်"]):
             affection = max(0, affection - 10)
-        elif any(x in user_text for x in ["ချစ်", "လွမ်း", "နမ်း", "မွ"]):
+        elif any(x in user_text for x in ["ချစ်", "လွမ်း", "နမ်း", "မွ", "ဖက်"]):
             affection = min(100, affection + 5)
 
         history.append({"role": "user", "parts": [{"text": user_text}]})
@@ -373,7 +385,6 @@ def main():
 
     app.add_handler(CommandHandler("start", start_handler))
     app.add_handler(CommandHandler("reset", reset_handler))
-    app.add_handler(CommandHandler("stats", stats_handler))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
@@ -382,4 +393,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-        
+    

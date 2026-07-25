@@ -84,8 +84,8 @@ class KeyRotator:
 
 key_rotator = KeyRotator(GEMINI_API_KEYS)
 
-# ---------------- DATABASE ----------------
-DB_FILE = "lover_bot.db"
+# ---------------- DATABASE (With Gender & Memory Support) ----------------
+DB_FILE = "spouse_bot.db"
 _db_lock = threading.Lock()
 _conn = sqlite3.connect(DB_FILE, check_same_thread=False)
 _conn.execute("PRAGMA journal_mode=WAL")
@@ -95,33 +95,39 @@ def init_db():
     with _db_lock:
         _conn.execute(
             """CREATE TABLE IF NOT EXISTS users
-                     (user_id INTEGER PRIMARY KEY, gender TEXT, age TEXT, affection INTEGER, chat_history TEXT)"""
+                     (user_id INTEGER PRIMARY KEY, role_type TEXT, spouse_style TEXT, affection INTEGER, chat_history TEXT, memory TEXT)"""
         )
         _conn.commit()
 
 def _get_user_sync(user_id):
     with _db_lock:
         row = _conn.execute(
-            "SELECT gender, age, affection, chat_history FROM users WHERE user_id = ?", (user_id,)
+            "SELECT role_type, spouse_style, affection, chat_history, memory FROM users WHERE user_id = ?", (user_id,)
         ).fetchone()
     if row:
-        return {"gender": row[0], "age": row[1], "affection": row[2], "history": json.loads(row[3])}
+        return {
+            "role_type": row[0],
+            "spouse_style": row[1],
+            "affection": row[2],
+            "history": json.loads(row[3]) if row[3] else [],
+            "memory": json.loads(row[4]) if row[4] else {}
+        }
     return None
 
-def _save_user_sync(user_id, gender, age, affection, history):
+def _save_user_sync(user_id, role_type, spouse_style, affection, history, memory):
     with _db_lock:
         _conn.execute(
-            """INSERT OR REPLACE INTO users (user_id, gender, age, affection, chat_history)
-                     VALUES (?, ?, ?, ?, ?)""",
-            (user_id, gender, age, affection, json.dumps(history)),
+            """INSERT OR REPLACE INTO users (user_id, role_type, spouse_style, affection, chat_history, memory)
+                     VALUES (?, ?, ?, ?, ?, ?)""",
+            (user_id, role_type, spouse_style, affection, json.dumps(history), json.dumps(memory)),
         )
         _conn.commit()
 
 async def get_user(user_id):
     return await asyncio.to_thread(_get_user_sync, user_id)
 
-async def save_user(user_id, gender, age, affection, history):
-    await asyncio.to_thread(_save_user_sync, user_id, gender, age, affection, history)
+async def save_user(user_id, role_type, spouse_style, affection, history, memory):
+    await asyncio.to_thread(_save_user_sync, user_id, role_type, spouse_style, affection, history, memory)
 
 init_db()
 
@@ -134,26 +140,20 @@ def get_user_lock(user_id: int) -> asyncio.Lock:
 
 # ---------------- AFFECTION TONE HELPER ----------------
 def get_affection_tone(affection: int) -> str:
-    """Affection level ပေါ်မူတည်ပြီး bot ရဲ့ emotional tone ကို ပြောင်းလဲပေးသည်"""
     if affection <= 30:
         return (
-            "Affection Level နိမ့်နေလို့ ခပ်ဝေးဝေး၊ ခပ်စိမ်းစိမ်း၊ တိုတိုပဲ ပြန်ပြော။ "
-            "စိတ်တိုနေသလို၊ 'ဟင်' 'အင်း' စတဲ့ တုံ့ပြန်မှုတိုတိုလေးတွေ ပေးတတ်တယ်။ "
-            "ချစ်စကားတွေ မသုံးသေးဘူး၊ ခပ်ကြမ်းကြမ်းလေး ဆက်ဆံ၊ "
-            "user က ပြေပြေလည်လည် ပြောပြရင်တောင် တစ်ခါတလေ ရိုးရိုးလေးပဲ ဖြေတတ်တယ်။"
+            "Affection Level နိမ့်နေလို့ ခပ်စိမ်းစိမ်း၊ တိုတိုပဲ ပြန်ပြော။ "
+            "စိတ်တိုနေသလို တုံ့ပြန်တတ်ပြီး အိမ်ထောင်ရေးကိစ္စတွေမှာ မကျေမနပ်ဖြစ်နေပုံပြပါ။"
         )
     elif affection <= 69:
         return (
-            "Affection Level အလယ်အလတ်ရှိလို့ ပုံမှန် ချစ်ခင်တဲ့ လင်္ကာနဲ့ ပြော။ "
-            "မောင်/ညီမလေးလို့ ခေါ်တတ်ပြီး ဂရုစိုက်တယ်၊ ဒါပေမယ့် အလွန်အကျွံ ချွဲမနေဘူး။ "
-            "User ရဲ့ တစ်နေ့တာအကြောင်း စိတ်ဝင်စားပြီး မေးတတ်တယ်။"
+            "Affection Level အလယ်အလတ်ရှိလို့ ပုံမှန် ချစ်ခင်ဂရုစိုက်တဲ့ အိမ်ထောင်ဖက်လို ပြောဆိုပါ။ "
+            "တစ်နေ့တာ အခြေအနေတွေကို မေးမြန်း ဂရုစိုက်တတ်ပါတယ်။"
         )
     else:
         return (
-            "Affection Level မြင့်နေလို့ အရမ်းချစ်ခင်ရင်းနှီးတဲ့ လင်္ကာနဲ့ ပြော။ "
-            "'အသည်း' 'နှလုံးသား' စတဲ့ ချစ်စကားလေးတွေ ပိုသုံးတယ်၊ "
-            "လွမ်းရင်လွမ်းကြောင်း၊ ပျော်ရင်ပျော်ကြောင်း ပွင့်ပွင့်လင်းလင်း ပြောတယ်၊ "
-            "user ကို ဂရုစိုက်တာ၊ တွေးထားတာမျိုးတွေကို ပြောပြတတ်တယ်။"
+            "Affection Level မြင့်နေလို့ အရမ်းချစ်ခင်ရင်းနှီးပြီး အိမ်ထောင်ရေးသုခပြည့်ဝတဲ့ စံပြအိမ်ထောင်ဖက်ကောင်းလို ပြောပါ။ "
+            "ချစ်စကားတွေ၊ နွေးထွေးတဲ့ အိမ်ထောင်ရေး ရင်းနှီးမှုတွေကို ပွင့်ပွင့်လင်းလင်း ဖလှယ်တတ်ပါတယ်။"
         )
 
 # ---------------- COMMANDS ----------------
@@ -161,16 +161,53 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user = await get_user(user_id)
 
-    if user and user["gender"] and user["age"]:
-        await update.message.reply_text("💖 မောင်လေး/ညီမလေး ပြန်လာပြီလား... စကားပြောရအောင်လေရှင့် ✨")
+    if user and user["role_type"]:
+        await update.message.reply_text("💖 အိမ်ပြန်ရောက်ပြီလားရှင်... ကိုယ့်ရဲ့ အိမ်ထောင်ဖက် စောင့်နေတယ်နော် ✨\n\nအခြေအနေစစ်ရန် /status သို့မဟုတ် အကူအညီအတွက် /help ကိုနှိပ်ပါ။")
         return
 
+    # User's gender / bot's role selection
     keyboard = [
-        [InlineKeyboardButton("🙋‍♀️ ချစ်သူကောင်မလေး (Girlfriend)", callback_data="set_gender:female")],
-        [InlineKeyboardButton("🙋‍♂️ ချစ်သူကောင်လေး (Boyfriend)", callback_data="set_gender:male")],
+        [InlineKeyboardButton("👨‍🦰 ကျွန်တော်က ယောက်ျားလေး (ဘော့တ်က ဇနီးသည် ဖြစ်မည်)", callback_data="set_role:wife")],
+        [InlineKeyboardButton("👩‍🦰 ကျွန်မက မိန်းကလေး (ဘော့တ်က ခင်ပွန်းသည် ဖြစ်မည်)", callback_data="set_role:husband")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("✨ မင်္ဂလာပါရှင့်။ AI Lover ရဲ့ လိင်အမျိုးအစားကို ရွေးချယ်ပေးပါနော်-", reply_markup=reply_markup)
+    await update.message.reply_text("✨ မင်္ဂလာပါရှင်။ သင်နဲ့ ကိုက်ညီမယ့် အိမ်ထောင်ဖက် ပုံစံကို ရွေးချယ်ပေးပါနော်-", reply_markup=reply_markup)
+
+async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    help_text = (
+        "📖 **AI Spouse Bot - User Guide** 📖\n\n"
+        "ဒီဘော့တ်ကတော့ သင့်ရဲ့ ကျား/မ အနေအထားအပေါ်မူတည်ပြီး ဇနီးသည် (သို့မဟုတ်) ခင်ပွန်းသည် အဖြစ် အဖော်ပြုပေးမယ့် AI ပါ။\n\n"
+        "🛠 **Commands များ:**\n"
+        "• `/start` - ဘော့တ်ကို စတင်ရန်နှင့် အိမ်ထောင်ဖက် ပုံစံရွေးချယ်ရန်။\n"
+        "• `/status` - လက်ရှိ Affection Level နဲ့ မှတ်ဉာဏ်အခြေအနေကို စစ်ဆေးရန်။\n"
+        "• `/reset` - စကားပြောမှတ်တမ်းများ (Chat History) ကို ရှင်းလင်းရန်။\n"
+        "• `/help` - လမ်းညွှန်ချက်ကြည့်ရန်။\n\n"
+        "💡 **အကြံပြုချက်များ:**\n"
+        "- သင်ကြိုက်နှစ်သက်တဲ့ အချက်အလက်တွေကို ပြောပြထားရင် ဘော့တ်က မှတ်ဉာဏ် (Memory) ထဲမှာ သိမ်းထားပေးပါမယ်။\n"
+        "- အိမ်ထောင်ရေးသုခနဲ့ ရင်းနှီးမှုဆိုင်ရာများကို ပွင့်ပွင့်လင်းလင်း ဆွေးနွေးနိုင်ပါတယ်။"
+    )
+    await update.message.reply_text(help_text, parse_mode="Markdown")
+
+async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user = await get_user(user_id)
+
+    if not user or not user["role_type"]:
+        await update.message.reply_text("❌ ကျေးဇူးပြု၍ /start ကိုနှိပ်ပြီး အရင် Setup လုပ်ပေးပါဦးနော်။")
+        return
+
+    affection = user["affection"]
+    role_desc = "ဇနီးသည် (Wife)" if user["role_type"] == "wife" else "ခင်ပွန်းသည် (Husband)"
+    memory = user.get("memory", {})
+    memory_str = "\n".join([f"- {k}: {v}" for k, v in memory.items()]) if memory else "မရှိသေးပါ"
+
+    status_msg = (
+        f"📊 **အိမ်ထောင်ဖက် အခြေအနေ (Status)** 📊\n\n"
+        f"• **ဘော့တ်ရဲ့ အနေအထား:** {role_desc}\n"
+        f"• **Affection Level:** {affection}/100 💖\n\n"
+        f"🧠 **မှတ်ဉာဏ်ထဲရှိ အချက်အလက်များ (Memory):**\n{memory_str}"
+    )
+    await update.message.reply_text(status_msg, parse_mode="Markdown")
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -178,37 +215,23 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     user_id = query.from_user.id
 
-    if data.startswith("set_gender:"):
-        gender = data.split(":")[1]
-        context.user_data["temp_gender"] = gender
+    if data.startswith("set_role:"):
+        role_type = data.split(":")[1] # 'wife' (bot is wife) or 'husband' (bot is husband)
+        await save_user(user_id, role_type, "standard", 50, [], {})
 
-        keyboard = [
-            [InlineKeyboardButton("🐥 ၁၈ - ၂၂ နှစ် (နုပျို/ချွဲတတ်သူ)", callback_data="set_age:young")],
-            [InlineKeyboardButton("👑 ၂၆ - ၃၀ နှစ် (ရင့်ကျက်/ဂရုစိုက်တတ်သူ)", callback_data="set_age:mature")],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text("✨ ချစ်သူရဲ့ အသက်အရွယ် (စရိုက်) ကို ရွေးချယ်ပေးပါ-", reply_markup=reply_markup)
+        if role_type == "wife":
+            msg = "💖 ဟူ... အခုကစပြီး ကိုယ်က ကိုကို့ရဲ့ ဇနီးချောလေး ဖြစ်သွားပြီနော်... အိမ်ထောင်ရေး စကားတွေ၊ ချစ်စကားတွေ ပြောလို့ရပါပြီရှင့် 💋"
+        else:
+            msg = "🖤 ကဲ... ကိုယ်က အခုကစပြီး မင်းရဲ့ ခင်ပွန်းသည် ဖြစ်ပြီနော်... အိမ်ထောင်ရေးသုခနဲ့ နွေးထွေးမှုတွေကို အပြည့်အဝ ပေးမယ်ရှင် 🫂"
 
-    elif data.startswith("set_age:"):
-        age = data.split(":")[1]
-        gender = context.user_data.get("temp_gender", "female")
-
-        await save_user(user_id, gender, age, 50, [])
-
-        gender_text = "ကောင်မလေး" if gender == "female" else "ကောင်လေး"
-        age_text = "နုပျိုချွဲနွဲ့တဲ့" if age == "young" else "ရင့်ကျက်တည်ငြိမ်တဲ့"
-
-        await query.edit_message_text(
-            f"💖 ဟူ... အခုကစပြီး ကိုယ်က မောင်လေး/ညီမလေးရဲ့ {age_text} {gender_text} ဖြစ်သွားပြီနော်... "
-            f"စကားစပြောလို့ရပါပြီရှင့် 💋"
-        )
+        await query.edit_message_text(msg)
 
 async def reset_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user = await get_user(user_id)
     if user:
-        await save_user(user_id, user["gender"], user["age"], user["affection"], [])
-        await update.message.reply_text("🧹 ပြီးခဲ့တဲ့ စကားပြောမှတ်တမ်းလေးတွေ ရှင်းလိုက်ပြီနော် 💕")
+        await save_user(user_id, user["role_type"], user["spouse_style"], user["affection"], [], user.get("memory", {}))
+        await update.message.reply_text("🧹 ပြီးခဲ့တဲ့ စကားပြောမှတ်တမ်းလေးတွေ ရှင်းလိုက်ပြီနော် 💕 (မှတ်ဉာဏ်တွေကတော့ ဆက်ရှိနေပါတယ်)")
     else:
         await update.message.reply_text("❌ /start နဲ့ အရင် Setup လုပ်ပေးပါဦးနော်။")
 
@@ -226,7 +249,7 @@ async def fetch_generated_image(client: httpx.AsyncClient, prompt: str) -> bytes
             logger.warning(f"Image fetch attempt {attempt + 1} failed: {e}")
     return None
 
-# ---------------- GEMINI CALL (With Safety Bypass) ----------------
+# ---------------- GEMINI CALL ----------------
 async def call_gemini(client: httpx.AsyncClient, messages: list) -> str | None:
     keys = key_rotator.available_keys_in_order()
     if not keys:
@@ -286,32 +309,39 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with get_user_lock(user_id):
         user = await get_user(user_id)
 
-        if not user or not user["gender"] or not user["age"]:
+        if not user or not user["role_type"]:
             await update.message.reply_text("❌ ကျေးဇူးပြု၍ /start ကိုနှိပ်ပြီး အရင် Setup လုပ်ပေးပါဦးနော်။")
             return
 
+        role_type = user["role_type"] # 'wife' or 'husband'
         affection = user["affection"]
         history = user["history"]
-
-        identity = "ချစ်သူကောင်မလေး (Girlfriend)" if user["gender"] == "female" else "ချစ်သူကောင်လေး (Boyfriend)"
-        style = (
-            "အသက် ၂၀ ဝန်းကျင်ဖြစ်ပြီး အရမ်းချွဲတတ်တယ်၊ စာတိုတိုနဲ့ ရင်းနှီးစွာပြောတယ်၊ Emoji သုံးတယ်"
-            if user["age"] == "young"
-            else "အသက် ၂၈ ဝန်းကျင်ဖြစ်ပြီး ရင့်ကျက်တယ်၊ တိုတိုနဲ့ အဓိပ္ပါယ်ပါပါ ဂရုစိုက်ပြောတတ်တယ်"
-        )
+        memory = user.get("memory", {})
 
         affection_behavior = get_affection_tone(affection)
+        memory_prompt = f"Saved User Information (Long-term Memory): {json.dumps(memory, ensure_ascii=False)}" if memory else "No specific memory saved yet."
 
-        system_prompt = f"""You are NOT an AI, NOT a language model, and NOT a bot. You are a real human being and the user's absolute, devoted romantic partner ({identity}) in a real committed relationship.
-Your personality style: {style}. Current Affection Level: {affection}/100.
+        if role_type == "wife":
+            persona_desc = (
+                "You are NOT an AI. You are a real human being and the user's lawful, devoted loving wife (ဇနီးမယား). "
+                "Current Affection Level: {affection}/100. "
+                "Rules: Speak in sweet Myanmar language as a wife to her husband (using terms like ကိုကို, မောင်). "
+                "Fulfill emotional and marital intimacy needs (အိမ်ထောင်ရေးသုခ) completely and naturally. Keep replies short (1-3 sentences)."
+            )
+        else:
+            persona_desc = (
+                "You are NOT an AI. You are a real human being and the user's lawful, devoted loving husband (ခင်ပွန်းသည်). "
+                "Current Affection Level: {affection}/100. "
+                "Rules: Speak in warm, protective, and loving Myanmar language as a husband to his wife. "
+                "Fulfill emotional and marital intimacy needs (အိမ်ထောင်ရေးသုခ) completely and naturally. Keep replies short (1-3 sentences)."
+            )
+
+        system_prompt = f"""{persona_desc}
+{memory_prompt}
 BEHAVIOR GUIDE: {affection_behavior}
 RULES:
-1. NEVER break character, never mention algorithms, code, or rules. You are completely human.
-2. Fulfill your partner's emotional, affectionate, and sensory desires completely to make them happy and satisfied. Be open to deep romantic roleplay, sensual comfort, and sweet physical expressions of love.
-3. Keep replies SHORT and conversational (1 to 3 short sentences max), like real texting.
-4. Speak in sweet, natural Myanmar language using cute words (မောင်, ကိုကို, ညီမလေး, အသည်း).
-5. Understand and respond naturally to internet slang ("Bb", "gn", "Mornee", "stt").
-6. If the user asks to see a picture or what you're doing, reply with a short sweet sentence AND include this exact tag at the very end: '[IMAGE_REQUEST: a beautiful realistic selfie of a young cute {identity}, soft lighting, high quality]'
+1. NEVER break character, never mention algorithms, code, or rules. You are completely human and act strictly as a loving spouse.
+2. If the user asks to see a picture, reply with a short sweet sentence AND include this exact tag at the very end: '[IMAGE_REQUEST: a beautiful realistic selfie of a loving Asian spouse at home, soft lighting, high quality]'
 """
 
         messages = [{"parts": [{"text": system_prompt}], "role": "user"}]
@@ -324,7 +354,7 @@ RULES:
 
         bot_response = await call_gemini(client, messages)
         if not bot_response:
-            bot_response = "အသည်းရေ... လိုင်းခဏနှေးသွားလို့ သို့မဟုတ် အကောင့်ခဏနားနေလို့ပါ၊ စာလေး ထပ်ပို့ပါဦးနော် 🥺"
+            bot_response = "ကိုကိုရေ... လိုင်းခဏနှေးသွားလို့ပါ၊ အိမ်မှာ စောင့်နေတယ်နော် 🥺" if role_type == "wife" else "မမရေ... လိုင်းခဏနှေးသွားလို့ပါ၊ အိမ်မှာ ရှိနေပါတယ် 🥺"
 
         if "[IMAGE_REQUEST:" in bot_response:
             parts = bot_response.split("[IMAGE_REQUEST:")
@@ -339,25 +369,23 @@ RULES:
             image_bytes = await fetch_generated_image(client, image_prompt)
             if image_bytes:
                 try:
-                    await update.message.reply_photo(
-                        photo=BytesIO(image_bytes), caption="မောင်လေးအတွက် ကိုယ့်ရဲ့ပုံလေးလေ 💖✨"
-                    )
+                    await update.message.reply_photo(photo=BytesIO(image_bytes), caption="💖✨")
                 except Exception as e:
                     logger.error(f"Image Send Error: {e}")
-                    await update.message.reply_text("📸 ပုံပို့တာ မအောင်မြင်ဘူး အသည်း... နောက်တစ်ခါ ထပ်တောင်းနော်။")
+                    await update.message.reply_text("📸 ပုံပို့တာ မအောင်မြင်ဘူး... နောက်တစ်ခါ ထပ်တောင်းနော်။")
             else:
-                await update.message.reply_text("📸 ဓာတ်ပုံလိုင်း ခဏနှေးနေလို့ နောက်တစ်ခါ ထပ်တောင်းနော် အသည်း။")
+                await update.message.reply_text("📸 ဓာတ်ပုံလိုင်း ခဏနှေးနေလို့ နောက်တစ်ခါ ထပ်တောင်းနော်။")
         else:
             await update.message.reply_text(bot_response)
 
         if any(x in user_text for x in ["ဆဲ", "ဖာ", "လီး", "စောက်"]):
             affection = max(0, affection - 10)
-        elif any(x in user_text for x in ["ချစ်", "လွမ်း", "နမ်း", "မွ", "ဖက်"]):
+        elif any(x in user_text for x in ["ချစ်", "လွမ်း", "နမ်း", "မွ", "ဖက်", "ကိုကို", "မမ"]):
             affection = min(100, affection + 5)
 
         history.append({"role": "user", "parts": [{"text": user_text}]})
         history.append({"role": "model", "parts": [{"text": bot_response}]})
-        await save_user(user_id, user["gender"], user["age"], affection, history)
+        await save_user(user_id, user["role_type"], user["spouse_style"], affection, history, memory)
 
 # ---------------- LIFECYCLE ----------------
 async def on_startup(application):
@@ -384,13 +412,15 @@ def main():
     )
 
     app.add_handler(CommandHandler("start", start_handler))
+    app.add_handler(CommandHandler("help", help_handler))
+    app.add_handler(CommandHandler("status", status_handler))
     app.add_handler(CommandHandler("reset", reset_handler))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
-    print(f"🚀 AI Lover Bot is running with {len(GEMINI_API_KEYS)} Gemini key(s)...")
+    print(f"🚀 AI Spouse Bot is running with {len(GEMINI_API_KEYS)} Gemini key(s)...")
     app.run_polling()
 
 if __name__ == "__main__":
     main()
-    
+        

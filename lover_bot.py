@@ -113,17 +113,29 @@ def _get_user_sync(user_id):
 def _save_user_sync(user_id, gender, age, affection, history):
     with _db_lock:
         _conn.execute(
-            """INSERT OR REPLACE INTO users (user_id, gender, age, affection, chat_history)
+            """INSERT OR IGNORE INTO users (user_id, gender, age, affection, chat_history)
                      VALUES (?, ?, ?, ?, ?)""",
             (user_id, gender, age, affection, json.dumps(history)),
         )
+        _conn.execute(
+            """UPDATE users SET gender = ?, age = ?, affection = ?, chat_history = ? WHERE user_id = ?""",
+            (gender, age, affection, json.dumps(history), user_id),
+        )
         _conn.commit()
+
+def _get_total_users_sync():
+    with _db_lock:
+        row = _conn.execute("SELECT COUNT(*) FROM users").fetchone()
+        return row[0] if row else 0
 
 async def get_user(user_id):
     return await asyncio.to_thread(_get_user_sync, user_id)
 
 async def save_user(user_id, gender, age, affection, history):
     await asyncio.to_thread(_save_user_sync, user_id, gender, age, affection, history)
+
+async def get_total_users():
+    return await asyncio.to_thread(_get_total_users_sync)
 
 init_db()
 
@@ -139,6 +151,10 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user = await get_user(user_id)
 
+    # User အသစ်ရောက်လာရင် database ထဲ အလိုအလျောက် မှတ်သားရန်
+    if not user:
+        await save_user(user_id, "", "", 50, [])
+
     if user and user["gender"] and user["age"]:
         await update.message.reply_text("💖 မောင်လေး/ညီမလေး ပြန်လာပြီလား... စကားပြောရအောင်လေရှင့် ✨")
         return
@@ -149,6 +165,10 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text("✨ မင်္ဂလာပါရှင့်။ AI Lover ရဲ့ လိင်အမျိုးအစားကို ရွေးချယ်ပေးပါနော်-", reply_markup=reply_markup)
+
+async def stats_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    total = await get_total_users()
+    await update.message.reply_text(f"📊 လက်ရှိ Bot ကို အသုံးပြုနေသူ စုစုပေါင်း - {total} ယောက် ရှိပါတယ်။")
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -353,6 +373,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start_handler))
     app.add_handler(CommandHandler("reset", reset_handler))
+    app.add_handler(CommandHandler("stats", stats_handler))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 

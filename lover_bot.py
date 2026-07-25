@@ -8,6 +8,7 @@ from urllib.parse import quote
 
 import httpx
 import json
+from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -32,6 +33,21 @@ else:
     GEMINI_API_KEYS = []
 
 GEMINI_MODEL = "gemini-3.6-flash"
+
+# ---------------- FLASK WEB SERVER (For Uptime Robot) ----------------
+app_flask = Flask(__name__)
+
+@app_flask.route('/')
+def home():
+    return "Bot is alive and running!"
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    app_flask.run(host="0.0.0.0", port=port)
+
+# Background မှာ Flask Server ကို စတင် Run ခြင်း
+web_thread = threading.Thread(target=run_web)
+web_thread.start()
 
 # ---------------- GEMINI KEY ROTATION ----------------
 class KeyRotator:
@@ -345,3 +361,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+        

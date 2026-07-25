@@ -25,11 +25,6 @@ logger = logging.getLogger(__name__)
 # ---------------- CONFIGURATIONS ----------------
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 
-# (Optional) Bot ကို Admin အနေနဲ့ ထိန်းချုပ်မယ့်သူတွေရဲ့ Telegram User ID များကို ထည့်ရန် (Comma ဖြင့် ခွဲ၍)
-# ဥပမာ - ADMIN_USER_IDS = [123456789, 987654321]
-admin_env = os.environ.get("ADMIN_USER_IDS", "")
-ADMIN_USER_IDS = [int(uid.strip()) for uid in admin_env.split(",") if uid.strip().isdigit()]
-
 env_keys = os.environ.get("GEMINI_API_KEYS", "")
 if env_keys:
     GEMINI_API_KEYS = [k.strip() for k in env_keys.split(",") if k.strip()]
@@ -129,29 +124,11 @@ def _save_user_sync(user_id, role_type, spouse_style, affection, history, memory
         )
         _conn.commit()
 
-# --- 1. စုစုပေါင်း User အရေအတွက် စစ်ဆေးပေးမယ့် Function ---
-def _get_total_users_count_sync() -> int:
-    with _db_lock:
-        row = _conn.execute("SELECT COUNT(*) FROM users").fetchone()
-        return row[0] if row else 0
-
-# --- 2. Database ထဲက User အားလုံးကို ရှင်းလင်းပေးမယ့် Function (Admin သီးသန့်) ---
-def _clear_all_users_sync():
-    with _db_lock:
-        _conn.execute("DELETE FROM users")
-        _conn.commit()
-
 async def get_user(user_id):
     return await asyncio.to_thread(_get_user_sync, user_id)
 
 async def save_user(user_id, role_type, spouse_style, affection, history, memory, total_tokens):
     await asyncio.to_thread(_save_user_sync, user_id, role_type, spouse_style, affection, history, memory, total_tokens)
-
-async def get_total_users_count():
-    return await asyncio.to_thread(_get_total_users_count_sync)
-
-async def clear_all_users():
-    await asyncio.to_thread(_clear_all_users_sync)
 
 init_db()
 
@@ -204,7 +181,6 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/start` - ဘော့တ်ကို စတင်ရန်နှင့် အိမ်ထောင်ဖက် ပုံစံရွေးချယ်ရန်။\n"
         "• `/status` - လက်ရှိ Affection Level၊ မှတ်ဉာဏ်နှင့် အသုံးပြုခဲ့သည့် စကားလုံး/Token အရေအတွက်ကို စစ်ဆေးရန်။\n"
         "• `/reset` - စကားပြောမှတ်တမ်းများ (Chat History) ကို ရှင်းလင်းရန်။\n"
-        "• `/totalusers` - ဘော့တ်ကို အသုံးပြုနေသူ စုစုပေါင်း အရေအတွက်ကို ကြည့်ရန် (Admin သို့မဟုတ် လူတိုင်းကြည့်ရန်)။\n"
         "• `/help` - လမ်းညွှန်ချက်ကြည့်ရန်။\n\n"
         "💡 **အကြံပြုချက်များ:**\n"
         "- သင်ကြိုက်နှစ်သက်တဲ့ အချက်အလက်တွေကို ပြောပြထားရင် ဘော့တ်က မှတ်ဉာဏ် (Memory) ထဲမှာ သိမ်းထားပေးပါမယ်။\n"
@@ -234,30 +210,6 @@ async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🧠 **မှတ်ဉာဏ်ထဲရှိ အချက်အလက်များ (Memory):**\n{memory_str}"
     )
     await update.message.reply_text(status_msg, parse_mode="Markdown")
-
-# --- 3. Total Users စစ်ဆေးပေးမယ့် Command အသစ် (/totalusers) ---
-async def total_users_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    
-    # အကယ်၍ Admin သီးသန့်ပဲ ကြည့်စေချင်ရင် ဒီအောက်ပါ if ကို ဖွင့်သုံးနိုင်ပါတယ် (မလိုအပ်ရင် ပိတ်ထားလို့ရပါတယ်)
-    # if ADMIN_USER_IDS and user_id not in ADMIN_USER_IDS:
-    #     await update.message.reply_text("❌ ဤ Command ကို အသုံးပြုရန် ခွင့်ပြုချက်မရှိပါ။")
-    #     return
-
-    count = await get_total_users_count()
-    await update.message.reply_text(f"👥 **Bot အသုံးပြုသူ စုစုပေါင်း (Total Users):** `{count}` ယောက် ရှိပါပြီ 📊", parse_mode="Markdown")
-
-# --- 4. Database ထဲက User အားလုံးကို ရှင်းလင်းပေးမယ့် Command အသစ် (/clearalldb - Admin သီးသန့်) ---
-async def clear_all_db_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    
-    # Safety Check: Admin ID စာရင်းထဲမှာ ပါမှ လုပ်လို့ရအောင် စစ်ဆေးခြင်း
-    if ADMIN_USER_IDS and user_id not in ADMIN_USER_IDS:
-        await update.message.reply_text("❌ ဤ Command ကို Admin များသာ အသုံးပြုနိုင်ပါသည်။")
-        return
-
-    await clear_all_users()
-    await update.message.reply_text("⚠️ Database ထဲရှိ User အချက်အလက် အားလုံးကို အောင်မြင်စွာ ရှင်းလင်း (Clear) လိုက်ပါပြီ။")
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -458,4 +410,31 @@ async def on_shutdown(application):
     if client:
         await client.aclose()
 
-# --------------
+# ---------------- MAIN ----------------
+def main():
+    if not TELEGRAM_BOT_TOKEN:
+        logger.error("TELEGRAM_BOT_TOKEN is missing in environment variables!")
+    if not GEMINI_API_KEYS:
+        logger.error("GEMINI_API_KEYS are missing in environment variables!")
+
+    app = (
+        ApplicationBuilder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .post_init(on_startup)
+        .post_shutdown(on_shutdown)
+        .build()
+    )
+
+    app.add_handler(CommandHandler("start", start_handler))
+    app.add_handler(CommandHandler("help", help_handler))
+    app.add_handler(CommandHandler("status", status_handler))
+    app.add_handler(CommandHandler("reset", reset_handler))
+    app.add_handler(CallbackQueryHandler(callback_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+
+    print(f"🚀 AI Spouse Bot is running with {len(GEMINI_API_KEYS)} Gemini key(s)...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
+    

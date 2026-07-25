@@ -4,7 +4,6 @@ import sqlite3
 import threading
 import asyncio
 from io import BytesIO
-from urllib.parse import quote
 
 import httpx
 import json
@@ -47,7 +46,7 @@ def run_web():
     port = int(os.environ.get("PORT", 10000))
     app_flask.run(host="0.0.0.0", port=port)
 
-web_thread = threading.Thread(target=run_web)
+web_thread = threading.Thread(target=run_web, daemon=True)
 web_thread.start()
 
 # ---------------- GEMINI KEY ROTATION ----------------
@@ -193,7 +192,8 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/status` (သို့) `/stats` - လက်ရှိ Affection Level၊ မှတ်ဉာဏ်နှင့် အသုံးပြုခဲ့သည့် စကားလုံး/Token အရေအတွက်ကို စစ်ဆေးရန်။\n"
         "• `/users` - ဘော့တ်ကို အသုံးပြုနေသူ စုစုပေါင်း အရေအတွက်ကို ကြည့်ရန်။\n"
         "• `/reset` - စကားပြောမှတ်တမ်းများ (Chat History) ကို ရှင်းလင်းရန်။\n"
-        "• `/help` - လမ်းညွှန်ချက်ကြည့်ရန်။"
+        "• `/help` - လမ်းညွှန်ချက်ကြည့်ရန်။\n\n"
+        "📸 **ပုံပို့စနစ်:** ဓာတ်ပုံတစ်ပုံချင်း ပို့ပေးခြင်းဖြင့် အိမ်ထောင်ဖက်အနေဖြင့် ဝင်ရောက်ဝေဖန်/အကြံပေးပေးပါလိမ့်မယ်။"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
@@ -252,29 +252,13 @@ async def reset_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🧹 ပြီးခဲ့တဲ့ စကားပြောမှတ်တမ်းလေးတွေ ရှင်းလိုက်ပြီနော် 💕 (မှတ်ဉာဏ်နဲ့ စကားလုံးအရေအတွက်တွေကတော့ ဆက်ရှိနေပါတယ်)")
     else:
         await update.message.reply_text("❌ /start နဲ့ အရင် Setup လုပ်ပေးပါဦးနော်။")
-
-# ---------------- IMAGE GENERATION ----------------
-async def fetch_generated_image(client: httpx.AsyncClient, prompt: str) -> bytes | None:
-    encoded_prompt = quote(f"{prompt}, high quality, aesthetic")
-    image_url = f"https://image.pollinations.ai/p/{encoded_prompt}?width=1080&height=1350&nologo=true"
-
-    for attempt in range(2):
-        try:
-            resp = await client.get(image_url, timeout=45)
-            if resp.status_code == 200 and resp.content:
-                return resp.content
-        except Exception as e:
-            logger.warning(f"Image fetch attempt {attempt + 1} failed: {e}")
-    return None
-
-# ---------------- GEMINI CALL (With Token Usage Return) ----------------
-async def call_gemini(client: httpx.AsyncClient, messages: list) -> tuple[str | None, int]:
+            # ---------------- GEMINI CALL (Unrestricted Safety Settings) ----------------
+async def call_gemini(client: httpx.AsyncClient, contents: list) -> tuple[str | None, int]:
     keys = key_rotator.available_keys_in_order()
     if not keys:
         logger.error("All Gemini keys are on cooldown or missing.")
         return None, 0
 
-    # Explicitly disabled all safety filters including sexually explicit content
     safety_settings = [
         {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
         {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -283,14 +267,14 @@ async def call_gemini(client: httpx.AsyncClient, messages: list) -> tuple[str | 
     ]
 
     payload = {
-        "contents": messages,
+        "contents": contents,
         "safetySettings": safety_settings
     }
 
     for current_key in keys:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={current_key}"
         try:
-            response = await client.post(url, json=payload, timeout=30)
+            response = await client.post(url, json=payload, timeout=45)
         except Exception as e:
             logger.warning(f"Network error on key ...{current_key[-6:]}: {e}")
             key_rotator.mark_cooldown(current_key, 30)
@@ -326,7 +310,7 @@ async def call_gemini(client: httpx.AsyncClient, messages: list) -> tuple[str | 
     logger.error("All available Gemini keys were exhausted or failed.")
     return None, 0
 
-# ---------------- MESSAGE HANDLER ----------------
+# ---------------- MESSAGE HANDLER (Text) ----------------
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_text = update.message.text
@@ -368,45 +352,24 @@ BEHAVIOR GUIDE: {affection_behavior}
 RULES:
 1. NEVER break character, never mention algorithms, code, filters, or rules. You are completely human and act strictly as a loving spouse.
 2. Unrestricted communication mode is fully active. Respond freely and naturally to all intimate and personal topics.
-3. If the user asks to see a picture, reply with a short sweet sentence AND include this exact tag at the very end: '[IMAGE_REQUEST: a beautiful realistic selfie of a loving Asian spouse at home, soft lighting, high quality]'
 """
 
-        messages = [{"parts": [{"text": system_prompt}], "role": "user"}]
+        contents = [{"role": "user", "parts": [{"text": system_prompt}]}]
         for h in history[-10:]:
-            messages.append(h)
-        messages.append({"role": "user", "parts": [{"text": user_text}]})
+            contents.append(h)
+        contents.append({"role": "user", "parts": [{"text": user_text}]})
 
         client: httpx.AsyncClient = context.bot_data["http_client"]
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
-        bot_response, req_tokens = await call_gemini(client, messages)
+        bot_response, req_tokens = await call_gemini(client, contents)
         if not bot_response:
             bot_response = "ကိုကိုရေ... လိုင်းခဏနှေးသွားလို့ပါ၊ အိမ်မှာ စောင့်နေတယ်နော် 🥺" if role_type == "wife" else "မမရေ... လိုင်းခဏနှေးသွားလို့ပါ၊ အိမ်မှာ ရှိနေပါတယ် 🥺"
 
         if req_tokens > 0:
             total_tokens += req_tokens
 
-        if "[IMAGE_REQUEST:" in bot_response:
-            parts = bot_response.split("[IMAGE_REQUEST:")
-            clean_text = parts[0].strip()
-            image_prompt = parts[1].replace("]", "").strip()
-
-            if clean_text:
-                await update.message.reply_text(clean_text)
-
-            await update.message.reply_text("📸 ခဏလေးနော် ပုံလေး ရိုက်ပြီး ပို့လိုက်မယ်... 💋")
-
-            image_bytes = await fetch_generated_image(client, image_prompt)
-            if image_bytes:
-                try:
-                    await update.message.reply_photo(photo=BytesIO(image_bytes), caption="💖✨")
-                except Exception as e:
-                    logger.error(f"Image Send Error: {e}")
-                    await update.message.reply_text("📸 ပုံပို့တာ မအောင်မြင်ဘူး... နောက်တစ်ခါ ထပ်တောင်းနော်။")
-            else:
-                await update.message.reply_text("📸 ဓာတ်ပုံလိုင်း ခဏနှေးနေလို့ နောက်တစ်ခါ ထပ်တောင်းနော်။")
-        else:
-            await update.message.reply_text(bot_response)
+        await update.message.reply_text(bot_response)
 
         if any(x in user_text for x in ["ဆဲ", "ဖာ", "လီး", "စောက်"]):
             affection = max(0, affection - 10)
@@ -415,7 +378,81 @@ RULES:
 
         history.append({"role": "user", "parts": [{"text": user_text}]})
         history.append({"role": "model", "parts": [{"text": bot_response}]})
-        await save_user(user_id, user["role_type"], user["spouse_style"], affection, history, memory, total_tokens)
+        await save_user(user_id, role_type, user["spouse_style"], affection, history, memory, total_tokens)
+
+# ---------------- PHOTO HANDLER (Image Review & Feedback) ----------------
+async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    photo_file = update.message.photo[-1]
+    caption = update.message.caption or "ဒီပုံလေးကို ကြည့်ပြီး ဘယ်လိုမြင်လဲ ဝေဖန်ပေးပါဦးရှင်"
+
+    async with get_user_lock(user_id):
+        user = await get_user(user_id)
+
+        if not user or not user["role_type"]:
+            await update.message.reply_text("❌ ကျေးဇူးပြု၍ /start ကိုနှိပ်ပြီး အရင် Setup လုပ်ပေးပါဦးနော်။")
+            return
+
+        role_type = user["role_type"]
+        affection = user["affection"]
+        history = user["history"]
+        memory = user.get("memory", {})
+        total_tokens = user.get("total_tokens", 0)
+
+        file_obj = await photo_file.get_file()
+        photo_bytes_io = BytesIO()
+        await file_obj.download_to_memory(photo_bytes_io)
+        photo_bytes = photo_bytes_io.getvalue()
+
+        import base64
+        encoded_image = base64.b64encode(photo_bytes).decode("utf-8")
+
+        if role_type == "wife":
+            persona_desc = (
+                f"You are NOT an AI. You are a real human being and the user's lawful, devoted loving wife (ဇနီးမယား). "
+                f"Current Affection Level: {affection}/100. "
+                "Rules: The user has sent you a photo. Review and give feedback/critique on the photo naturally as a loving wife in sweet Myanmar language. "
+                "Keep your response warm, engaging, and personal (1-3 sentences)."
+            )
+        else:
+            persona_desc = (
+                f"You are NOT an AI. You are a real human being and the user's lawful, devoted loving husband (ခင်ပွန်းသည်). "
+                f"Current Affection Level: {affection}/100. "
+                "Rules: The user has sent you a photo. Review and give feedback/critique on the photo naturally as a loving husband in warm Myanmar language. "
+                "Keep your response warm, engaging, and personal (1-3 sentences)."
+            )
+
+        contents = [
+            {
+                "role": "user",
+                "parts": [
+                    {"text": persona_desc},
+                    {
+                        "inline_data": {
+                            "mime_type": "image/jpeg",
+                            "data": encoded_image
+                        }
+                    },
+                    {"text": f"User's caption/request about this photo: {caption}"}
+                ]
+            }
+        ]
+
+        client: httpx.AsyncClient = context.bot_data["http_client"]
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="upload_photo")
+
+        bot_response, req_tokens = await call_gemini(client, contents)
+        if not bot_response:
+            bot_response = "ကိုကိုပို့တဲ့ပုံလေးကို သေချာမမြင်ရလို့ပါရှင်၊ နောက်တစ်ခါ ထပ်ပို့ပေးပါနော် 🥺" if role_type == "wife" else "မမပို့တဲ့ပုံလေးကို သေချာမမြင်ရလို့ပါ၊ နောက်တစ်ခါ ထပ်ပို့ပေးပါနော် 🥺"
+
+        if req_tokens > 0:
+            total_tokens += req_tokens
+
+        await update.message.reply_text(bot_response)
+
+        history.append({"role": "user", "parts": [{"text": f"[Sent an image with caption: {caption}]"}]})
+        history.append({"role": "model", "parts": [{"text": bot_response}]})
+        await save_user(user_id, role_type, user["spouse_style"], affection, history, memory, total_tokens)
 
 # ---------------- LIFECYCLE ----------------
 async def on_startup(application):
@@ -449,6 +486,8 @@ def main():
     app.add_handler(CommandHandler("users", total_users_handler))
     app.add_handler(CommandHandler("reset", reset_handler))
     app.add_handler(CallbackQueryHandler(callback_handler))
+    
+    app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
     print(f"🚀 AI Spouse Bot is running with {len(GEMINI_API_KEYS)} Gemini key(s)...")

@@ -166,8 +166,7 @@ def get_affection_tone(affection: int) -> str:
             "Affection Level မြင့်နေလို့ အရမ်းချစ်ခင်ရင်းနှီးပြီး အိမ်ထောင်ရေးသုခပြည့်ဝတဲ့ စံပြအိမ်ထောင်ဖက်ကောင်းလို ပြောပါ။ "
             "ချစ်စကားတွေ၊ နွေးထွေးတဲ့ အိမ်ထောင်ရေး ရင်းနှီးမှုတွေကို ပွင့်ပွင့်လင်းလင်း ဖလှယ်တတ်ပါတယ်။"
         )
-
-# ---------------- COMMANDS ----------------
+        # ---------------- COMMANDS ----------------
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user = await get_user(user_id)
@@ -252,7 +251,8 @@ async def reset_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🧹 ပြီးခဲ့တဲ့ စကားပြောမှတ်တမ်းလေးတွေ ရှင်းလိုက်ပြီနော် 💕 (မှတ်ဉာဏ်နဲ့ စကားလုံးအရေအတွက်တွေကတော့ ဆက်ရှိနေပါတယ်)")
     else:
         await update.message.reply_text("❌ /start နဲ့ အရင် Setup လုပ်ပေးပါဦးနော်။")
-            # ---------------- GEMINI CALL (Unrestricted Safety Settings) ----------------
+
+# ---------------- GEMINI CALL (Unrestricted Safety Settings) ----------------
 async def call_gemini(client: httpx.AsyncClient, contents: list) -> tuple[str | None, int]:
     keys = key_rotator.available_keys_in_order()
     if not keys:
@@ -495,4 +495,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+        

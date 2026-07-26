@@ -3,9 +3,12 @@ import os
 import sqlite3
 import threading
 import asyncio
+from io import BytesIO
+import base64
 import json
 
 import httpx
+from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -16,7 +19,21 @@ from telegram.ext import (
     filters,
 )
 
-from keep_alive import keep_alive
+# ---------------- KEEP ALIVE (FLASK) ----------------
+app_flask = Flask(__name__)
+
+@app_flask.route('/')
+def home():
+    return "Bot is alive and running!"
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    app_flask.run(host="0.0.0.0", port=port)
+
+def keep_alive():
+    web_thread = threading.Thread(target=run_web, daemon=True)
+    web_thread.start()
+
 keep_alive()
 
 logging.basicConfig(level=logging.INFO)
@@ -128,15 +145,7 @@ def get_user_lock(user_id: int) -> asyncio.Lock:
         _user_locks[user_id] = asyncio.Lock()
     return _user_locks[user_id]
 
-# ---------------- HELPERS & HANDLERS (PART 1) ----------------
-def get_affection_tone(affection: int) -> str:
-    if affection <= 30:
-        return "Affection Level နိမ့်နေလို့ ခပ်စိမ်းစိမ်း၊ တိုတိုပဲ ပြန်ပြောပါ။"
-    elif affection <= 69:
-        return "Affection Level အလယ်အလတ်ရှိလို့ ပုံမှန် ချစ်ခင်ဂရုစိုက်တဲ့ အိမ်ထောင်ဖက်လို ပြောပါ။"
-    else:
-        return "Affection Level မြင့်နေလို့ အရမ်းချစ်ခင်ရင်းနှီးတဲ့ အိမ်ထောင်ဖက်လို ပြောပါ။"
-
+# ---------------- HANDLERS ----------------
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user = await get_user(user_id)
@@ -176,12 +185,9 @@ async def reset_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user:
         await save_user(update.effective_user.id, user["role_type"], user["spouse_style"], user["affection"], [], user.get("memory", {}), user.get("total_tokens", 0))
         await update.message.reply_text("🧹 မှတ်တမ်းများ ရှင်းလင်းပြီးပါပြီ။")
-        from io import BytesIO
-import base64
-import json
 
 # ---------------- GEMINI API CALL ----------------
-async def call_gemini(client, contents: list) -> tuple[str | None, int]:
+async def call_gemini(client: httpx.AsyncClient, contents: list) -> tuple[str | None, int]:
     keys = key_rotator.available_keys_in_order()
     if not keys:
         return None, 0
@@ -212,7 +218,7 @@ async def call_gemini(client, contents: list) -> tuple[str | None, int]:
     return None, 0
 
 # ---------------- MESSAGES & PHOTOS HANDLERS ----------------
-async def message_handler(update, context):
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_text = update.message.text
     async with get_user_lock(user_id):
@@ -238,7 +244,7 @@ async def message_handler(update, context):
         history.append({"role": "model", "parts": [{"text": bot_response}]})
         await save_user(user_id, role_type, user["spouse_style"], affection, history, memory, total_tokens)
 
-async def photo_handler(update, context):
+async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     photo_file = update.message.photo[-1]
     caption = update.message.caption or "ဒီပုံလေးကို ကြည့်ပေးပါဦး"
@@ -307,4 +313,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    

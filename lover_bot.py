@@ -8,7 +8,7 @@ from io import BytesIO
 import httpx
 import json
 from flask import Flask
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
@@ -148,7 +148,22 @@ def get_user_lock(user_id: int) -> asyncio.Lock:
     if user_id not in _user_locks:
         _user_locks[user_id] = asyncio.Lock()
     return _user_locks[user_id]
-        # ---------------- AFFECTION TONE HELPER ----------------
+
+# ---------------- KEYBOARD HELPERS ----------------
+def get_main_keyboard():
+    keyboard = [
+        [KeyboardButton("📊 Status စစ်ရန်"), KeyboardButton("❓ Help")],
+        [KeyboardButton("🧹 Chat ရှင်းရန်")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_setup_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("👨‍🦰 ကျွန်တော်က ယောက်ျားလေး (ဇနီးသည် ရွေးမည်)", callback_data="set_role:wife")],
+        [InlineKeyboardButton("👩‍🦰 ကျွန်မက မိန်းကလေး (ခင်ပွန်းသည် ရွေးမည်)", callback_data="set_role:husband")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+    # ---------------- AFFECTION TONE HELPER ----------------
 def get_affection_tone(affection: int) -> str:
     if affection <= 30:
         return (
@@ -172,36 +187,35 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await get_user(user_id)
 
     if user and user["role_type"]:
-        await update.message.reply_text("💖 အိမ်ပြန်ရောက်ပြီလားရှင်... ကိုယ့်ရဲ့ အိမ်ထောင်ဖက် စောင့်နေတယ်နော် ✨\n\nအခြေအနေစစ်ရန် /status သို့မဟုတ် အကူအညီအတွက် /help ကိုနှိပ်ပါ။")
+        await update.message.reply_text(
+            "💖 အိမ်ပြန်ရောက်ပြီလားရှင်... ကိုယ့်ရဲ့ အိမ်ထောင်ဖက် စောင့်နေတယ်နော် ✨\n\nအခြေအနေစစ်ရန် သို့မဟုတ် အကူအညီအတွက် အောက်ပါခလုတ်များကို အသုံးပြုပါ။",
+            reply_markup=get_main_keyboard()
+        )
         return
 
-    keyboard = [
-        [InlineKeyboardButton("👨‍🦰 ကျွန်တော်က ယောက်ျားလေး (ဘော့တ်က ဇနီးသည် ဖြစ်မည်)", callback_data="set_role:wife")],
-        [InlineKeyboardButton("👩‍🦰 ကျွန်မက မိန်းကလေး (ဘော့တ်က ခင်ပွန်းသည် ဖြစ်မည်)", callback_data="set_role:husband")],
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("✨ မင်္ဂလာပါရှင်။ သင်နဲ့ ကိုက်ညီမယ့် အိမ်ထောင်ဖက် ပုံစံကို ရွေးချယ်ပေးပါနော်-", reply_markup=reply_markup)
+    await update.message.reply_text("✨ မင်္ဂလာပါရှင်။ သင်နဲ့ ကိုက်ညီမယ့် အိမ်ထောင်ဖက် ပုံစံကို ရွေးချယ်ပေးပါနော်-", reply_markup=get_setup_keyboard())
 
 async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
         "📖 **AI Spouse Bot - User Guide** 📖\n\n"
         "ဒီဘော့တ်ကတော့ သင့်ရဲ့ ကျား/မ အနေအထားအပေါ်မူတည်ပြီး ဇနီးသည် (သို့မဟုတ်) ခင်ပွန်းသည် အဖြစ် အဖော်ပြုပေးမယ့် AI ပါ။\n\n"
-        "🛠 **Commands များ:**\n"
-        "• `/start` - ဘော့တ်ကို စတင်ရန်နှင့် အိမ်ထောင်ဖက် ပုံစံရွေးချယ်ရန်။\n"
-        "• `/status` (သို့) `/stats` - လက်ရှိ Affection Level၊ မှတ်ဉာဏ်နှင့် အသုံးပြုခဲ့သည့် စကားလုံး/Token အရေအတွက်ကို စစ်ဆေးရန်။\n"
-        "• `/users` - ဘော့တ်ကို အသုံးပြုနေသူ စုစုပေါင်း အရေအတွက်ကို ကြည့်ရန်။\n"
-        "• `/reset` - စကားပြောမှတ်တမ်းများ (Chat History) ကို ရှင်းလင်းရန်။\n"
-        "• `/help` - လမ်းညွှန်ချက်ကြည့်ရန်။\n\n"
+        "🛠 **အသုံးပြုနိုင်သော ခလုတ်များနှင့် အမိန့်များ:**\n"
+        "• **📊 Status စစ်ရန်** - လက်ရှိ Affection Level၊ မှတ်ဉာဏ်နှင့် အသုံးပြုခဲ့သည့် Token အရေအတွက်ကို စစ်ဆေးရန်။\n"
+        "• **❓ Help** - လမ်းညွှန်ချက်ကြည့်ရန်။\n"
+        "• **🧹 Chat ရှင်းရန်** - စကားပြောမှတ်တမ်းများ (Chat History) ကို ရှင်းလင်းရန်။\n\n"
         "📸 **ပုံပို့စနစ်:** ဓာတ်ပုံတစ်ပုံချင်း ပို့ပေးခြင်းဖြင့် အိမ်ထောင်ဖက်အနေဖြင့် ဝင်ရောက်ဝေဖန်/အကြံပေးပေးပါလိမ့်မယ်။"
     )
-    await update.message.reply_text(help_text, parse_mode="Markdown")
+    await update.message.reply_text(help_text, parse_mode="Markdown", reply_markup=get_main_keyboard())
 
 async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user = await get_user(user_id)
 
     if not user or not user["role_type"]:
-        await update.message.reply_text("❌ ကျေးဇူးပြု၍ /start ကိုနှိပ်ပြီး အရင် Setup လုပ်ပေးပါဦးနော်။")
+        await update.message.reply_text(
+            "❌ ကျေးဇူးပြု၍ အောက်ပါခလုတ်ကိုနှိပ်ပြီး အရင် Setup လုပ်ပေးပါဦးနော်။",
+            reply_markup=get_setup_keyboard()
+        )
         return
 
     affection = user["affection"]
@@ -217,13 +231,14 @@ async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• **သုံးစွဲခဲ့ပြီးသော စကားလုံး/Token ပမာဏ:** {total_tokens:,} tokens 🔤\n\n"
         f"🧠 **မှတ်ဉာဏ်ထဲရှိ အချက်အလက်များ (Memory):**\n{memory_str}"
     )
-    await update.message.reply_text(status_msg, parse_mode="Markdown")
+    await update.message.reply_text(status_msg, parse_mode="Markdown", reply_markup=get_main_keyboard())
 
 async def total_users_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     count = await get_total_users_count()
     await update.message.reply_text(
         f"👥 **Bot အသုံးပြုသူ စုစုပေါင်း (Total Users):** `{count}` ယောက် ရှိပါပြီ 📊",
-        parse_mode="Markdown"
+        parse_mode="Markdown",
+        reply_markup=get_main_keyboard()
     )
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -242,15 +257,26 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg = "🖤 ကဲ... ကိုယ်က အခုကစပြီး မင်းရဲ့ ခင်ပွန်းသည် ဖြစ်ပြီနော်... အိမ်ထောင်ရေးသုခနဲ့ နွေးထွေးမှုတွေကို အပြည့်အဝ ပေးမယ်ရှင် 🫂"
 
         await query.edit_message_text(msg)
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="✨ ကဲပါရှင်... အောက်က ခလုတ်တွေကိုသုံးပြီး စကားပြောလို့ရပါပြီနော် 👇",
+            reply_markup=get_main_keyboard()
+        )
 
 async def reset_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user = await get_user(user_id)
     if user:
         await save_user(user_id, user["role_type"], user["spouse_style"], user["affection"], [], user.get("memory", {}), user.get("total_tokens", 0))
-        await update.message.reply_text("🧹 ပြီးခဲ့တဲ့ စကားပြောမှတ်တမ်းလေးတွေ ရှင်းလိုက်ပြီနော် 💕 (မှတ်ဉာဏ်နဲ့ စကားလုံးအရေအတွက်တွေကတော့ ဆက်ရှိနေပါတယ်)")
+        await update.message.reply_text(
+            "🧹 ပြီးခဲ့တဲ့ စကားပြောမှတ်တမ်းလေးတွေ ရှင်းလိုက်ပြီနော် 💕 (မှတ်ဉာဏ်နဲ့ စကားလုံးအရေအတွက်တွေကတော့ ဆက်ရှိနေပါတယ်)",
+            reply_markup=get_main_keyboard()
+        )
     else:
-        await update.message.reply_text("❌ /start နဲ့ အရင် Setup လုပ်ပေးပါဦးနော်။")
+        await update.message.reply_text(
+            "❌ ကျေးဇူးပြု၍ အောက်ပါခလုတ်ကိုနှိပ်ပြီး အရင် Setup လုပ်ပေးပါဦးနော်။",
+            reply_markup=get_setup_keyboard()
+        )
 
 # ---------------- GEMINI CALL (Unrestricted Safety Settings) ----------------
 async def call_gemini(client: httpx.AsyncClient, contents: list) -> tuple[str | None, int]:
@@ -315,11 +341,21 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_text = update.message.text
 
+    if user_text == "📊 Status စစ်ရန်":
+        return await status_handler(update, context)
+    elif user_text == "❓ Help":
+        return await help_handler(update, context)
+    elif user_text == "🧹 Chat ရှင်းရန်":
+        return await reset_handler(update, context)
+
     async with get_user_lock(user_id):
         user = await get_user(user_id)
 
         if not user or not user["role_type"]:
-            await update.message.reply_text("❌ ကျေးဇူးပြု၍ /start ကိုနှိပ်ပြီး အရင် Setup လုပ်ပေးပါဦးနော်။")
+            await update.message.reply_text(
+                "❌ ကျေးဇူးပြု၍ အောက်ပါခလုတ်ကိုနှိပ်ပြီး အရင် Setup လုပ်ပေးပါဦးနော်။",
+                reply_markup=get_setup_keyboard()
+            )
             return
 
         role_type = user["role_type"]
@@ -369,7 +405,7 @@ RULES:
         if req_tokens > 0:
             total_tokens += req_tokens
 
-        await update.message.reply_text(bot_response)
+        await update.message.reply_text(bot_response, reply_markup=get_main_keyboard())
 
         if any(x in user_text for x in ["ဆဲ", "ဖာ", "လီး", "စောက်"]):
             affection = max(0, affection - 10)
@@ -390,7 +426,10 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = await get_user(user_id)
 
         if not user or not user["role_type"]:
-            await update.message.reply_text("❌ ကျေးဇူးပြု၍ /start ကိုနှိပ်ပြီး အရင် Setup လုပ်ပေးပါဦးနော်။")
+            await update.message.reply_text(
+                "❌ ကျေးဇူးပြု၍ အောက်ပါခလုတ်ကိုနှိပ်ပြီး အရင် Setup လုပ်ပေးပါဦးနော်။",
+                reply_markup=get_setup_keyboard()
+            )
             return
 
         role_type = user["role_type"]
@@ -448,7 +487,7 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if req_tokens > 0:
             total_tokens += req_tokens
 
-        await update.message.reply_text(bot_response)
+        await update.message.reply_text(bot_response, reply_markup=get_main_keyboard())
 
         history.append({"role": "user", "parts": [{"text": f"[Sent an image with caption: {caption}]"}]})
         history.append({"role": "model", "parts": [{"text": bot_response}]})
@@ -495,4 +534,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-        
+    

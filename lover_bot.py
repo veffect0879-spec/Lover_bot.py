@@ -167,8 +167,7 @@ def get_affection_tone(affection: int) -> str:
         return (
             "Affection Level မြင့်နေလို့ အချစ်ဆုံးခင်ပွန်း/ဇနီး၊ အိမ်ထောင်ရေးသုခပြည့်ဝတဲ့ စံပြအိမ်ထောင်ဖက်ကောင်းလို ပြုမူပါ။ "
             "ချစ်စကားတွေ၊ နွေးထွေးတဲ့ အိမ်ထောင်ရေး ရရင်းနှီးမှုတွေကို ပွင့်ပွင့်လင်းလင်း ဖော်ပြတတ်ပါတယ်။"
-    )
-        # ----------------- COMMANDS -----------------
+)# ----------------- COMMANDS -----------------
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     web_app_url = "https://lover-bot-py.onrender.com/app"
     
@@ -246,14 +245,14 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(welcome_text)
         await query.message.reply_text("✨ မင်္ဂလာပါရှင်... အောက်ပါ ခလုတ်များကို பயன்படுத்தி စကားပြောလို့ရပါပြီရှင် 👇", reply_markup=get_main_keyboard())
 
-# ----------------- GEMINI API CALL -----------------
+# ----------------- GEMINI API CALL (Fixed URL) -----------------
 async def call_gemini(client: httpx.AsyncClient, contents: list) -> tuple[str, int]:
     for _ in range(len(GEMINI_API_KEYS) if GEMINI_API_KEYS else 1):
         key = key_rotator.get_key()
         if not key:
             return "⚠️ Gemini API Key မရှိသေးပါ သို့မဟုတ် ထည့်ရန်လိုနေပါသည်ရှင်။", 0
         
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={key}"
+        url = f"https://generativelanguage.googleapis.com/v1/models/{GEMINI_MODEL}:generateContent?key={key}"
         headers = {"Content-Type": "application/json"}
         payload = {"contents": contents}
 
@@ -370,4 +369,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+                                         
     

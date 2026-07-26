@@ -7,7 +7,7 @@ from io import BytesIO
 
 import httpx
 import json
-from flask import Flask
+from flask import Flask, render_template
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     ApplicationBuilder,
@@ -37,7 +37,10 @@ GEMINI_MODEL = "gemini-3.6-flash"
 
 # ---------------- FLASK WEB SERVER (For Uptime Robot) ----------------
 app_flask = Flask(__name__)
-
+@app_flask.route('/app')
+def web_app():
+    return render_template('index.html')
+    
 @app_flask.route('/')
 def home():
     return "Bot is alive and running!"
@@ -183,17 +186,19 @@ def get_affection_tone(affection: int) -> str:
 
 # ---------------- COMMANDS ----------------
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user = await get_user(user_id)
+    # သင့်ရဲ့ Render Live URL နောက်က /app ကို ထည့်ပါ
+    web_app_url = "https://lover-bot-py.onrender.com"
+    
+    keyboard = [
+        [InlineKeyboardButton("💖 အိမ်ထောင်ဖက် App ဖွင့်ရန်", web_app=WebAppInfo(url=web_app_url))]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        "✨ မင်္ဂလာပါရှင်... အောက်ပါခလုတ်ကိုနှိပ်ပြီး Mini App မျက်နှာပြင်သို့ တိုက်ရိုက်ဝင်ရောက်နိုင်ပါပြီ 💕",
+        reply_markup=reply_markup
+    )
 
-    if user and user["role_type"]:
-        await update.message.reply_text(
-            "💖 အိမ်ပြန်ရောက်ပြီလားရှင်... ကိုယ့်ရဲ့ အိမ်ထောင်ဖက် စောင့်နေတယ်နော် ✨\n\nအခြေအနေစစ်ရန် သို့မဟုတ် အကူအညီအတွက် အောက်ပါခလုတ်များကို အသုံးပြုပါ။",
-            reply_markup=get_main_keyboard()
-        )
-        return
-
-    await update.message.reply_text("✨ မင်္ဂလာပါရှင်။ သင်နဲ့ ကိုက်ညီမယ့် အိမ်ထောင်ဖက် ပုံစံကို ရွေးချယ်ပေးပါနော်-", reply_markup=get_setup_keyboard())
 
 async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (

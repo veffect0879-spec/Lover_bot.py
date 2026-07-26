@@ -3,12 +3,11 @@ import os
 import sqlite3
 import threading
 import asyncio
-from io import BytesIO
-
 import httpx
 import json
-from flask import Flask, render_template
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
+
+from flask import Flask
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
@@ -35,16 +34,12 @@ else:
 
 GEMINI_MODEL = "gemini-2.5-flash"
 
-# ----------------- FLASK WEB SERVER (For Telegram Mini App & Uptime Robot) -----------------
+# ----------------- FLASK WEB SERVER (For Uptime Robot Only) -----------------
 app_flask = Flask(__name__)
-
-@app_flask.route('/app')
-def web_app():
-    return render_template('index.html')
 
 @app_flask.route('/')
 def home():
-    return "Bot is alive and running!"
+    return "Bot is alive and running smoothly!"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
@@ -167,18 +162,22 @@ def get_affection_tone(affection: int) -> str:
         return (
             "Affection Level မြင့်နေလို့ အချစ်ဆုံးခင်ပွန်း/ဇနီး၊ အိမ်ထောင်ရေးသုခပြည့်ဝတဲ့ စံပြအိမ်ထောင်ဖက်ကောင်းလို ပြုမူပါ။ "
             "ချစ်စကားတွေ၊ နွေးထွေးတဲ့ အိမ်ထောင်ရေး ရရင်းနှီးမှုတွေကို ပွင့်ပွင့်လင်းလင်း ဖော်ပြတတ်ပါတယ်။"
-)# ----------------- COMMANDS -----------------
+        )
+        # ----------------- COMMANDS -----------------
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    web_app_url = "https://lover-bot-py.onrender.com/app"
-    
-    keyboard = [
-        [InlineKeyboardButton("💖 အိမ်ထောင်ဖက် App ဖွင့်ရန်", web_app=WebAppInfo(url=web_app_url))]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
+    user_id = update.effective_user.id
+    user = await get_user(user_id)
+
+    if user and user["role_type"]:
+        await update.message.reply_text(
+            "💖 အိမ်ပြန်ရောက်ပြီလားရှင်... ကိုယ့်ရဲ့ အိမ်ထောင်ဖက် စောင့်နေတယ်နော် ✨",
+            reply_markup=get_main_keyboard()
+        )
+        return
+
     await update.message.reply_text(
-        "✨ မင်္ဂလာပါရှင်... အောက်ပါခလုတ်ကိုနှိပ်ပြီး Mini App မျက်နှာပြင်သို့ တိုက်ရိုက်ဝင်ရောက်နိုင်ပါပြီ 💕",
-        reply_markup=reply_markup
+        "✨ မင်္ဂလာပါရှင်။ သင့်နဲ့ ကိုက်ညီမယ့် အိမ်ထောင်ဖက် ပုံစံကို ရွေးချယ်ပေးပါရန်-",
+        reply_markup=get_setup_keyboard()
     )
 
 async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -198,7 +197,7 @@ async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not user or not user["role_type"]:
         await update.message.reply_text(
-            "❌ ကျေးဇူးပြု၍ အောက်ပါလင့်ခ်ကိုနှိပ်ပြီး အရင် Setup လုပ်ပေးပါဦးရှင်။",
+            "❌ ကျေးဇူးပြု၍ /start ကိုနှိပ်ပြီး အရင် Setup လုပ်ပေးပါဦးရှင်။",
             reply_markup=get_main_keyboard()
         )
         return
@@ -243,16 +242,16 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"ဘာတွေကူညီပေးရမလဲ မမရေ 🥰"
         )
         await query.edit_message_text(welcome_text)
-        await query.message.reply_text("✨ မင်္ဂလာပါရှင်... အောက်ပါ ခလုတ်များကို பயன்படுத்தி စကားပြောလို့ရပါပြီရှင် 👇", reply_markup=get_main_keyboard())
+        await query.message.reply_text("✨ မင်္ဂလာပါရှင်... အောက်ပါ ခလုတ်များကို பயன்படுத்தி စကားပြောလို့ရပါရှင် 👇", reply_markup=get_main_keyboard())
 
-# ----------------- GEMINI API CALL (Fixed URL) -----------------
+# ----------------- GEMINI API CALL (Fixed v1beta URL) -----------------
 async def call_gemini(client: httpx.AsyncClient, contents: list) -> tuple[str, int]:
     for _ in range(len(GEMINI_API_KEYS) if GEMINI_API_KEYS else 1):
         key = key_rotator.get_key()
         if not key:
             return "⚠️ Gemini API Key မရှိသေးပါ သို့မဟုတ် ထည့်ရန်လိုနေပါသည်ရှင်။", 0
         
-        url = f"https://generativelanguage.googleapis.com/v1/models/{GEMINI_MODEL}:generateContent?key={key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={key}"
         headers = {"Content-Type": "application/json"}
         payload = {"contents": contents}
 
@@ -285,7 +284,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await get_user(user_id)
 
     if not user or not user["role_type"]:
-        await update.message.reply_text("✨ မင်္ဂလာပါရှင်... ကျေးဇူးပြု၍ အောက်ပါပုံစံကို ရွေးချယ်ပေးပါရှင် -", reply_markup=get_setup_keyboard())
+        await update.message.reply_text("✨ မင်္ဂလာပါရှင်... ကျေးဇူးပြု၍ အရင်ဆုံး Role ရွေးချယ်ပေးပါရှင် -", reply_markup=get_setup_keyboard())
         return
 
     text = update.message.text
@@ -318,8 +317,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_chat_action(chat_id=update.effective_user.id, action="typing")
 
     bot_response, req_tokens = await call_gemini(client, contents)
-    if not bot_response:
-        bot_response = "ကိုကို့ကိုယ့်စုံစလောက်ကို သနားပြုံးလို့ပြရိုင့်ရှင်။ နောက်တစ်ခါ ထပ်ပို့ပေးပါနော် 🥺"
 
     total_tokens = user["tokens_used"] + req_tokens
     affection = user["affection"]
@@ -369,5 +366,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-                                         
     

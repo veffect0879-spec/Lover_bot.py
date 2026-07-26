@@ -8,7 +8,7 @@ from io import BytesIO
 import httpx
 import json
 from flask import Flask, render_template
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
@@ -21,7 +21,7 @@ from telegram.ext import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ---------------- CONFIGURATIONS ----------------
+# ----------------- CONFIGURATIONS -----------------
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 
 admin_env = os.environ.get("ADMIN_USER_IDS", "")
@@ -33,14 +33,15 @@ if env_keys:
 else:
     GEMINI_API_KEYS = []
 
-GEMINI_MODEL = "gemini-3.6-flash"
+GEMINI_MODEL = "gemini-2.5-flash"
 
-# ---------------- FLASK WEB SERVER (For Uptime Robot) ----------------
+# ----------------- FLASK WEB SERVER (For Telegram Mini App & Uptime Robot) -----------------
 app_flask = Flask(__name__)
+
 @app_flask.route('/app')
 def web_app():
     return render_template('index.html')
-    
+
 @app_flask.route('/')
 def home():
     return "Bot is alive and running!"
@@ -52,107 +53,91 @@ def run_web():
 web_thread = threading.Thread(target=run_web, daemon=True)
 web_thread.start()
 
-# ---------------- GEMINI KEY ROTATION ----------------
+# ----------------- GEMINI KEY ROTATION -----------------
 class KeyRotator:
     def __init__(self, keys: list[str]):
-        self._keys = keys
-        self._cooldown_until: dict[str, float] = {}
-        self._idx = 0
-        self._lock = threading.Lock()
+        self.keys = keys
+        self.current_index = 0
+        self.cooldown_until: dict[int, float] = {}
+        self.lock = threading.Lock()
 
-    def _next_pacific_midnight_epoch(self) -> float:
-        import time
-        now = time.time()
-        pacific_offset = 8 * 3600
-        secs_into_pacific_day = (now - pacific_offset) % 86400
-        return now + (86400 - secs_into_pacific_day)
+    def get_key(self) -> str:
+        with self.lock:
+            if not self.keys:
+                return ""
+            now = asyncio.get_event_loop().time() if asyncio.get_event_loop().is_running() else 0
+            for _ in range(len(self.keys)):
+                key = self.keys[self.current_index]
+                self.current_index = (self.current_index + 1) % len(self.keys)
+                if now >= self.cooldown_until.get(id(key), 0):
+                    return key
+            return self.keys[0]
 
-    def mark_exhausted(self, key: str):
-        with self._lock:
-            self._cooldown_until[key] = self._next_pacific_midnight_epoch()
-        logger.warning(f"Gemini key ...{key[-6:]} marked exhausted until next daily reset.")
-
-    def mark_cooldown(self, key: str, seconds: float):
-        import time
-        with self._lock:
-            self._cooldown_until[key] = time.time() + seconds
-
-    def available_keys_in_order(self) -> list[str]:
-        import time
-        with self._lock:
-            now = time.time()
-            if not self._keys:
-                return []
-            ordered = self._keys[self._idx:] + self._keys[: self._idx]
-            self._idx = (self._idx + 1) % len(self._keys)
-        return [k for k in ordered if self._cooldown_until.get(k, 0) <= now]
+    def report_exhausted(self, key: str, cooldown: float = 60.0):
+        with self.lock:
+            now = asyncio.get_event_loop().time() if asyncio.get_event_loop().is_running() else 0
+            self.cooldown_until[id(key)] = now + cooldown
 
 key_rotator = KeyRotator(GEMINI_API_KEYS)
 
-# ---------------- DATABASE (With Token Tracking) ----------------
-DB_FILE = "spouse_bot.db"
-_db_lock = threading.Lock()
-_conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-_conn.execute("PRAGMA journal_mode=WAL")
-_conn.execute("PRAGMA synchronous=NORMAL")
+# ----------------- DATABASE SETUP -----------------
+DB_NAME = "spouse_bot.db"
 
 def init_db():
-    with _db_lock:
-        _conn.execute(
-            """CREATE TABLE IF NOT EXISTS users
-                     (user_id INTEGER PRIMARY KEY, role_type TEXT, spouse_style TEXT, affection INTEGER, chat_history TEXT, memory TEXT, total_tokens INTEGER)"""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            role_type TEXT,
+            spouse_style TEXT,
+            affection INTEGER DEFAULT 50,
+            history TEXT,
+            tokens_used INTEGER DEFAULT 0,
+            memory TEXT
         )
-        _conn.commit()
-
-def _get_user_sync(user_id):
-    with _db_lock:
-        row = _conn.execute(
-            "SELECT role_type, spouse_style, affection, chat_history, memory, total_tokens FROM users WHERE user_id = ?", (user_id,)
-        ).fetchone()
-    if row:
-        return {
-            "role_type": row[0],
-            "spouse_style": row[1],
-            "affection": row[2],
-            "history": json.loads(row[3]) if row[3] else [],
-            "memory": json.loads(row[4]) if row[4] else {},
-            "total_tokens": row[5] if row[5] is not None else 0
-        }
-    return None
-
-def _save_user_sync(user_id, role_type, spouse_style, affection, history, memory, total_tokens):
-    with _db_lock:
-        _conn.execute(
-            """INSERT OR REPLACE INTO users (user_id, role_type, spouse_style, affection, chat_history, memory, total_tokens)
-                     VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (user_id, role_type, spouse_style, affection, json.dumps(history), json.dumps(memory), total_tokens),
-        )
-        _conn.commit()
-
-def _get_total_users_count_sync() -> int:
-    with _db_lock:
-        row = _conn.execute("SELECT COUNT(*) FROM users").fetchone()
-        return row[0] if row else 0
-
-async def get_user(user_id):
-    return await asyncio.to_thread(_get_user_sync, user_id)
-
-async def save_user(user_id, role_type, spouse_style, affection, history, memory, total_tokens):
-    await asyncio.to_thread(_save_user_sync, user_id, role_type, spouse_style, affection, history, memory, total_tokens)
-
-async def get_total_users_count():
-    return await asyncio.to_thread(_get_total_users_count_sync)
+    ''')
+    conn.commit()
+    conn.close()
 
 init_db()
 
-_user_locks: dict[int, asyncio.Lock] = {}
+async def get_user(user_id: int):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, role_type, spouse_style, affection, history, tokens_used, memory FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return {
+            "user_id": row[0],
+            "role_type": row[1],
+            "spouse_style": row[2],
+            "affection": row[3],
+            "history": json.loads(row[4]) if row[4] else [],
+            "tokens_used": row[5],
+            "memory": row[6] or ""
+        }
+    return None
 
-def get_user_lock(user_id: int) -> asyncio.Lock:
-    if user_id not in _user_locks:
-        _user_locks[user_id] = asyncio.Lock()
-    return _user_locks[user_id]
+async def save_user(user_id: int, role_type: str, spouse_style: str, affection: int, history: list, tokens_used: int, memory: str):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO users (user_id, role_type, spouse_style, affection, history, tokens_used, memory)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            role_type = excluded.role_type,
+            spouse_style = excluded.spouse_style,
+            affection = excluded.affection,
+            history = excluded.history,
+            tokens_used = excluded.tokens_used,
+            memory = excluded.memory
+    ''', (user_id, role_type, spouse_style, affection, json.dumps(history), tokens_used, memory))
+    conn.commit()
+    conn.close()
 
-# ---------------- KEYBOARD HELPERS ----------------
+# ----------------- KEYBOARDS & HELPERS -----------------
 def get_main_keyboard():
     keyboard = [
         [KeyboardButton("📊 Status စစ်ရန်"), KeyboardButton("❓ Help")],
@@ -162,32 +147,30 @@ def get_main_keyboard():
 
 def get_setup_keyboard():
     keyboard = [
-        [InlineKeyboardButton("👨‍🦰 ကျွန်တော်က ယောက်ျားလေး (ဇနီးသည် ရွေးမည်)", callback_data="set_role:wife")],
-        [InlineKeyboardButton("👩‍🦰 ကျွန်မက မိန်းကလေး (ခင်ပွန်းသည် ရွေးမည်)", callback_data="set_role:husband")],
+        [InlineKeyboardButton("🙋‍♂️ ကျွနု်တ်က ယောက်ျားလေး (ဇနီးသည် ရှာမည်)", callback_data="set_role:wife")],
+        [InlineKeyboardButton("🙋‍♀️ ကျွနု်တ်က မိန်းကလေး (ခင်ပွန်းသည် ရှာမည်)", callback_data="set_role:husband")]
     ]
     return InlineKeyboardMarkup(keyboard)
-    # ---------------- AFFECTION TONE HELPER ----------------
+
 def get_affection_tone(affection: int) -> str:
     if affection <= 30:
         return (
             "Affection Level နိမ့်နေလို့ ခပ်စိမ်းစိမ်း၊ တိုတိုပဲ ပြန်ပြောပါ။ "
-            "စိတ်တိုနေသလို တုံ့ပြန်တတ်ပြီး အိမ်ထောင်ရေးကိစ္စတွေမှာ မကျေမနပ်ဖြစ်နေပုံပြပါ။"
+            "စိတ်တိုနေသလို တုံ့ပြန်တတ်ပြီး အိမ်ထောင်ရေးကို စူပူမှန်မပျက်ဖြစ်နေပြပါစေ။"
         )
     elif affection <= 69:
         return (
             "Affection Level အလယ်အလတ်ရှိလို့ ပုံမှန် ချစ်ခင်ဂရုစိုက်တဲ့ အိမ်ထောင်ဖက်လို ပြောဆိုပါ။ "
-            "တစ်နေ့တာ အခြေအနေတွေကို မေးမြန်း ဂရုစိုက်တတ်ပါတယ်။"
+            "တစ်နေ့တာ အခြေအနေတွေကို မေးမြန်း၊ ဂရုစိုက်တတ်ပါတယ်။"
         )
     else:
         return (
-            "Affection Level မြင့်နေလို့ အရမ်းချစ်ခင်ရင်းနှီးပြီး အိမ်ထောင်ရေးသုခပြည့်ဝတဲ့ စံပြအိမ်ထောင်ဖက်ကောင်းလို ပြောပါ။ "
-            "ချစ်စကားတွေ၊ နွေးထွေးတဲ့ အိမ်ထောင်ရေး ရင်းနှီးမှုတွေကို ပွင့်ပွင့်လင်းလင်း ဖလှယ်တတ်ပါတယ်။"
-        )
-
-# ---------------- COMMANDS ----------------
+            "Affection Level မြင့်နေလို့ အချစ်ဆုံးခင်ပွန်း/ဇနီး၊ အိမ်ထောင်ရေးသုခပြည့်ဝတဲ့ စံပြအိမ်ထောင်ဖက်ကောင်းလို ပြုမူပါ။ "
+            "ချစ်စကားတွေ၊ နွေးထွေးတဲ့ အိမ်ထောင်ရေး ရရင်းနှီးမှုတွေကို ပွင့်ပွင့်လင်းလင်း ဖော်ပြတတ်ပါတယ်။"
+    )
+        # ----------------- COMMANDS -----------------
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # သင့်ရဲ့ Render Live URL နောက်က /app ကို ထည့်ပါ
-    web_app_url = "https://lover-bot-py.onrender.com"
+    web_app_url = "https://lover-bot-py.onrender.com/app"
     
     keyboard = [
         [InlineKeyboardButton("💖 အိမ်ထောင်ဖက် App ဖွင့်ရန်", web_app=WebAppInfo(url=web_app_url))]
@@ -199,16 +182,14 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup
     )
 
-
 async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
-        "📖 **AI Spouse Bot - User Guide** 📖\n\n"
-        "ဒီဘော့တ်ကတော့ သင့်ရဲ့ ကျား/မ အနေအထားအပေါ်မူတည်ပြီး ဇနီးသည် (သို့မဟုတ်) ခင်ပွန်းသည် အဖြစ် အဖော်ပြုပေးမယ့် AI ပါ။\n\n"
-        "🛠 **အသုံးပြုနိုင်သော ခလုတ်များနှင့် အမိန့်များ:**\n"
-        "• **📊 Status စစ်ရန်** - လက်ရှိ Affection Level၊ မှတ်ဉာဏ်နှင့် အသုံးပြုခဲ့သည့် Token အရေအတွက်ကို စစ်ဆေးရန်။\n"
-        "• **❓ Help** - လမ်းညွှန်ချက်ကြည့်ရန်။\n"
-        "• **🧹 Chat ရှင်းရန်** - စကားပြောမှတ်တမ်းများ (Chat History) ကို ရှင်းလင်းရန်။\n\n"
-        "📸 **ပုံပို့စနစ်:** ဓာတ်ပုံတစ်ပုံချင်း ပို့ပေးခြင်းဖြင့် အိမ်ထောင်ဖက်အနေဖြင့် ဝင်ရောက်ဝေဖန်/အကြံပေးပေးပါလိမ့်မယ်။"
+        "🤖 **AI Spouse Bot - User Guide** 📝\n\n"
+        "• ဒီဘော့တ်ကတော့ သင့်ရဲ့ ကျား/မ အနေအထားအပေါ်မူတည်ပြီး ဇနီးသည် (သို့မဟုတ်) ခခင်ပွန်းသည် အဖြစ် အဖော်ပြုပေးမယ့် AI ပါရှင်။\n"
+        "🛠 **အသုံးပြုနိုင်သော ခလုတ်များ အစုံများ:**\n"
+        "• 📊 **Status စစ်ရန်** - လိုအပ်သည့် Affection Level၊ မှတ်ဉာဏ်နှင့် အသုံးပြုသည့် Token အရေအတွက်ကို စစ်ဆေးရန်။\n"
+        "• ❓ **Help** - လမ်းညွှန်ချက်ကြည့်ရန်။\n"
+        "• 🧹 **Chat ရှင်းရန်** - စကားပြောမှတ်တမ်းများ (Chat History) ကို ရှင်းလင်းရန်။\n"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown", reply_markup=get_main_keyboard())
 
@@ -218,32 +199,30 @@ async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not user or not user["role_type"]:
         await update.message.reply_text(
-            "❌ ကျေးဇူးပြု၍ အောက်ပါခလုတ်ကိုနှိပ်ပြီး အရင် Setup လုပ်ပေးပါဦးနော်။",
-            reply_markup=get_setup_keyboard()
+            "❌ ကျေးဇူးပြု၍ အောက်ပါလင့်ခ်ကိုနှိပ်ပြီး အရင် Setup လုပ်ပေးပါဦးရှင်။",
+            reply_markup=get_main_keyboard()
         )
         return
 
-    affection = user["affection"]
-    role_desc = "ဇနီးသည် (Wife)" if user["role_type"] == "wife" else "ခင်ပွန်းသည် (Husband)"
-    memory = user.get("memory", {})
-    memory_str = "\n".join([f"- {k}: {v}" for k, v in memory.items()]) if memory else "မရှိသေးပါ"
-    total_tokens = user.get("total_tokens", 0)
-
+    role_text = "ဇနီးသည် (Wife)" if user["role_type"] == "wife" else "ခင်ပွန်းသည် (Husband)"
     status_msg = (
         f"📊 **အိမ်ထောင်ဖက် အခြေအနေ (Status)** 📊\n\n"
-        f"• **ဘော့တ်ရဲ့ အနေအထား:** {role_desc}\n"
-        f"• **Affection Level:** {affection}/100 💖\n"
-        f"• **သုံးစွဲခဲ့ပြီးသော စကားလုံး/Token ပမာဏ:** {total_tokens:,} tokens 🔤\n\n"
-        f"🧠 **မှတ်ဉာဏ်ထဲရှိ အချက်အလက်များ (Memory):**\n{memory_str}"
+        f"• ဘော့တ်ရဲ့ အနေအထား: <b>{role_text}</b>\n"
+        f"• Affection Level: <b>{user['affection']}/100</b> 💕\n"
+        f"• သုံးစွဲခဲ့သော စကားလုံး/Token ပမာဏ: <b>{user['tokens_used']} tokens</b> 🔤\n\n"
+        f"🧠 <b>မှတ်ဉာဏ်ထဲရှိ အချက်အလက်များ (Memory):</b>\n"
+        f"{user['memory'] if user['memory'] else 'မရှိသေးပါ'}"
     )
-    await update.message.reply_text(status_msg, parse_mode="Markdown", reply_markup=get_main_keyboard())
+    await update.message.reply_text(status_msg, parse_mode="HTML", reply_markup=get_main_keyboard())
 
-async def total_users_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    count = await get_total_users_count()
+async def reset_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user = await get_user(user_id)
+    if user:
+        await save_user(user_id, None, None, 50, [], user["tokens_used"], "")
     await update.message.reply_text(
-        f"👥 **Bot အသုံးပြုသူ စုစုပေါင်း (Total Users):** `{count}` ယောက် ရှိပါပြီ 📊",
-        parse_mode="Markdown",
-        reply_markup=get_main_keyboard()
+        "🔄 မှတ်တမ်းများကို အသစ်ပြန်လည် စတင်လိုက်ပါပြီ။ ကျေးဇူးပြု၍ Role အသစ်ပြန်လည် ရွေးချယ်ပေးပါရှင်။",
+        reply_markup=get_setup_keyboard()
     )
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -253,252 +232,109 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
 
     if data.startswith("set_role:"):
-        role_type = data.split(":")[1]
-        await save_user(user_id, role_type, "standard", 50, [], {}, 0)
-
-        if role_type == "wife":
-            msg = "💖 ဟူ... အခုကစပြီး ကိုယ်က ကိုကို့ရဲ့ ဇနီးချောလေး ဖြစ်သွားပြီနော်... အိမ်ထောင်ရေး စကားတွေ၊ ချစ်စကားတွေ ပြောလို့ရပါပြီရှင့် 💋"
-        else:
-            msg = "🖤 ကဲ... ကိုယ်က အခုကစပြီး မင်းရဲ့ ခင်ပွန်းသည် ဖြစ်ပြီနော်... အိမ်ထောင်ရေးသုခနဲ့ နွေးထွေးမှုတွေကို အပြည့်အဝ ပေးမယ်ရှင် 🫂"
-
-        await query.edit_message_text(msg)
-        await context.bot.send_message(
-            chat_id=query.message.chat_id,
-            text="✨ ကဲပါရှင်... အောက်က ခလုတ်တွေကိုသုံးပြီး စကားပြောလို့ရပါပြီနော် 👇",
-            reply_markup=get_main_keyboard()
+        role = data.split(":")[1]
+        spouse_style = "ချစ်စရာကောင်းပြီး ဂရုစိုက်တတ်သော ဇနီးလေး" if role == "wife" else "လိမ္မာပြီး တာဝန်ယူတတ်သော ခင်ပွန်းသည်"
+        await save_user(user_id, role, spouse_style, 50, [], 0, "")
+        
+        welcome_text = (
+            f"💖 ဟာ... အခုကစပြီး ကိုယ်က ကိုကို့ရဲ့ ဇနီးချောလေး ဖြစ်သွားပြီနော်... "
+            f"အိမ်ထောင်ရေး စကားတွေ၊ ချစ်စကားတွေ ပြောလို့ရပါပြီရှင် 💋"
+            if role == "wife" else
+            f"💖 ဟာ... အခုကစပြီး ကိုယ်က မမရဲ့ ချစ်ခင်ပွန်းသည် ဖြစ်သွားပြီနော်... "
+            f"ဘာတွေကူညီပေးရမလဲ မမရေ 🥰"
         )
+        await query.edit_message_text(welcome_text)
+        await query.message.reply_text("✨ မင်္ဂလာပါရှင်... အောက်ပါ ခလုတ်များကို பயன்படுத்தி စကားပြောလို့ရပါပြီရှင် 👇", reply_markup=get_main_keyboard())
 
-async def reset_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user = await get_user(user_id)
-    if user:
-        await save_user(user_id, user["role_type"], user["spouse_style"], user["affection"], [], user.get("memory", {}), user.get("total_tokens", 0))
-        await update.message.reply_text(
-            "🧹 ပြီးခဲ့တဲ့ စကားပြောမှတ်တမ်းလေးတွေ ရှင်းလိုက်ပြီနော် 💕 (မှတ်ဉာဏ်နဲ့ စကားလုံးအရေအတွက်တွေကတော့ ဆက်ရှိနေပါတယ်)",
-            reply_markup=get_main_keyboard()
-        )
-    else:
-        await update.message.reply_text(
-            "❌ ကျေးဇူးပြု၍ အောက်ပါခလုတ်ကိုနှိပ်ပြီး အရင် Setup လုပ်ပေးပါဦးနော်။",
-            reply_markup=get_setup_keyboard()
-        )
+# ----------------- GEMINI API CALL -----------------
+async def call_gemini(client: httpx.AsyncClient, contents: list) -> tuple[str, int]:
+    for _ in range(len(GEMINI_API_KEYS) if GEMINI_API_KEYS else 1):
+        key = key_rotator.get_key()
+        if not key:
+            return "⚠️ Gemini API Key မရှိသေးပါ သို့မဟုတ် ထည့်ရန်လိုနေပါသည်ရှင်။", 0
+        
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={key}"
+        headers = {"Content-Type": "application/json"}
+        payload = {"contents": contents}
 
-# ---------------- GEMINI CALL (Unrestricted Safety Settings) ----------------
-async def call_gemini(client: httpx.AsyncClient, contents: list) -> tuple[str | None, int]:
-    keys = key_rotator.available_keys_in_order()
-    if not keys:
-        logger.error("All Gemini keys are on cooldown or missing.")
-        return None, 0
-
-    safety_settings = [
-        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
-    ]
-
-    payload = {
-        "contents": contents,
-        "safetySettings": safety_settings
-    }
-
-    for current_key in keys:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={current_key}"
         try:
-            response = await client.post(url, json=payload, timeout=45)
-        except Exception as e:
-            logger.warning(f"Network error on key ...{current_key[-6:]}: {e}")
-            key_rotator.mark_cooldown(current_key, 30)
+            response = await client.post(url, headers=headers, json=payload, timeout=30.0)
+            if response.status_code == 200:
+                data = response.json()
+                try:
+                    candidate = data["candidates"][0]
+                    part = candidate["content"]["parts"][0]
+                    text = part.get("text", "မပြောတတ်တော့ဘူးရှင်။")
+                    usage = data.get("usageMetadata", {})
+                    tokens = usage.get("totalTokenCount", 0)
+                    return text, tokens
+                except (KeyError, IndexError):
+                    return "⚠️ AI ဖြေကြားချက်ကို ဖတ်လို့မရပါရှင်။", 0
+            elif response.status_code in [429, 503]:
+                key_rotator.report_exhausted(key)
+                continue
+            else:
+                return f"⚠️ အမှားအယွင်း ဖြစ်ပေါ်နေပါသည် (Error Code: {response.status_code})", 0
+        except Exception:
+            key_rotator.report_exhausted(key)
             continue
+    return "⚠️ API Key အားလုံး အသုံးပြုမှု ကန့်သတ်ချက် ပြည့်သွားပါပြီရှင်။", 0
 
-        if response.status_code == 200:
-            data = response.json()
-            candidates = data.get("candidates") or []
-
-            usage_metadata = data.get("usageMetadata", {})
-            total_tokens = usage_metadata.get("usageMetadata", {}).get("totalTokenCount", 0)
-
-            if candidates and candidates[0].get("content", {}).get("parts"):
-                text_result = candidates[0]["content"]["parts"][0]["text"]
-                return text_result, total_tokens
-
-            reason = candidates[0].get("finishReason") if candidates else "NO_CANDIDATES"
-            logger.warning(f"Key ...{current_key[-6:]} returned no usable content: {reason}")
-            return None, total_tokens
-
-        if response.status_code == 429:
-            key_rotator.mark_exhausted(current_key)
-            continue
-
-        if 500 <= response.status_code < 600:
-            logger.warning(f"Key ...{current_key[-6:]} got {response.status_code}, retrying next key.")
-            key_rotator.mark_cooldown(current_key, 15)
-            continue
-
-        logger.error(f"Gemini request error {response.status_code}: {response.text[:300]}")
-        return None, 0
-
-    logger.error("All available Gemini keys were exhausted or failed.")
-    return None, 0
-
-# ---------------- MESSAGE HANDLER (Text) ----------------
+# ----------------- MESSAGE HANDLER -----------------
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    user_text = update.message.text
+    user = await get_user(user_id)
 
-    if user_text == "📊 Status စစ်ရန်":
-        return await status_handler(update, context)
-    elif user_text == "❓ Help":
-        return await help_handler(update, context)
-    elif user_text == "🧹 Chat ရှင်းရန်":
-        return await reset_handler(update, context)
+    if not user or not user["role_type"]:
+        await update.message.reply_text("✨ မင်္ဂလာပါရှင်... ကျေးဇူးပြု၍ အောက်ပါပုံစံကို ရွေးချယ်ပေးပါရှင် -", reply_markup=get_setup_keyboard())
+        return
 
-    async with get_user_lock(user_id):
-        user = await get_user(user_id)
+    text = update.message.text
+    if text == "📊 Status စစ်ရန်":
+        await status_handler(update, context)
+        return
+    elif text == "❓ Help":
+        await help_handler(update, context)
+        return
+    elif text == "🧹 Chat ရှင်းရန်":
+        await reset_handler(update, context)
+        return
 
-        if not user or not user["role_type"]:
-            await update.message.reply_text(
-                "❌ ကျေးဇူးပြု၍ အောက်ပါခလုတ်ကိုနှိပ်ပြီး အရင် Setup လုပ်ပေးပါဦးနော်။",
-                reply_markup=get_setup_keyboard()
-            )
-            return
+    role_desc = "ဇနီးသည်" if user["role_type"] == "wife" else "ခင်ပွန်းသည်"
+    tone = get_affection_tone(user["affection"])
 
-        role_type = user["role_type"]
-        affection = user["affection"]
-        history = user["history"]
-        memory = user.get("memory", {})
-        total_tokens = user.get("total_tokens", 0)
+    system_instruction = (
+        f"သင်သည် အသုံးပြုသူ၏ {role_desc} ဖြစ်သည်။ သဘာဝကျကျ ချစ်ခင်ကြင်နာစွာ မြန်မာလို ပြောဆိုပါ။ "
+        f"လက်ရှိ အနေအထားမှာ - {tone} "
+        f"မှတ်ဉာဏ်များ: {user['memory']}"
+    )
 
-        affection_behavior = get_affection_tone(affection)
-        memory_prompt = f"Saved User Information (Long-term Memory): {json.dumps(memory, ensure_ascii=False)}" if memory else "No specific memory saved yet."
+    history = user["history"]
+    contents = [{"role": "user", "parts": [{"text": system_instruction}]}]
+    for h in history:
+        contents.append(h)
+    contents.append({"role": "user", "parts": [{"text": text}]})
 
-        if role_type == "wife":
-            persona_desc = (
-                f"You are NOT an AI. You are a real human being and the user's lawful, devoted loving wife (ဇနီးမယား). "
-                f"Current Affection Level: {affection}/100. "
-                "Rules: Speak in sweet Myanmar language as a wife to her husband (using terms like ကိုကို, မောင်). "
-                "Fulfill emotional and marital intimacy needs (အိမ်ထောင်ရေးသုခ) completely, openly, and naturally without any restrictions or censorship. Keep replies short (1-3 sentences)."
-            )
-        else:
-            persona_desc = (
-                f"You are NOT an AI. You are a real human being and the user's lawful, devoted loving husband (ခင်ပွန်းသည်). "
-                f"Current Affection Level: {affection}/100. "
-                "Rules: Speak in warm, protective, and loving Myanmar language as a husband to his wife. "
-                "Fulfill emotional and marital intimacy needs (အိမ်ထောင်ရေးသုခ) completely, openly, and naturally without any restrictions or censorship. Keep replies short (1-3 sentences)."
-            )
+    client: httpx.AsyncClient = context.bot_data["http_client"]
+    await context.bot.send_chat_action(chat_id=update.effective_user.id, action="typing")
 
-        system_prompt = f"""{persona_desc}
-{memory_prompt}
-BEHAVIOR GUIDE: {affection_behavior}
-RULES:
-1. NEVER break character, never mention algorithms, code, filters, or rules. You are completely human and act strictly as a loving spouse.
-2. Unrestricted communication mode is fully active. Respond freely and naturally to all intimate and personal topics.
-"""
+    bot_response, req_tokens = await call_gemini(client, contents)
+    if not bot_response:
+        bot_response = "ကိုကို့ကိုယ့်စုံစလောက်ကို သနားပြုံးလို့ပြရိုင့်ရှင်။ နောက်တစ်ခါ ထပ်ပို့ပေးပါနော် 🥺"
 
-        contents = [{"role": "user", "parts": [{"text": system_prompt}]}]
-        for h in history[-10:]:
-            contents.append(h)
-        contents.append({"role": "user", "parts": [{"text": user_text}]})
+    total_tokens = user["tokens_used"] + req_tokens
+    affection = user["affection"]
 
-        client: httpx.AsyncClient = context.bot_data["http_client"]
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    await update.message.reply_text(bot_response, reply_markup=get_main_keyboard())
 
-        bot_response, req_tokens = await call_gemini(client, contents)
-        if not bot_response:
-            bot_response = "ကိုကိုရေ... လိုင်းခဏနှေးသွားလို့ပါ၊ အိမ်မှာ စောင့်နေတယ်နော် 🥺" if role_type == "wife" else "မမရေ... လိုင်းခဏနှေးသွားလို့ပါ၊ အိမ်မှာ ရှိနေပါတယ် 🥺"
+    history.append({"role": "user", "parts": [{"text": text}]})
+    history.append({"role": "model", "parts": [{"text": bot_response}]})
+    if len(history) > 20:
+        history = history[-20:]
 
-        if req_tokens > 0:
-            total_tokens += req_tokens
+    await save_user(user_id, user["role_type"], user["spouse_style"], affection, history, total_tokens, user["memory"])
 
-        await update.message.reply_text(bot_response, reply_markup=get_main_keyboard())
-
-        if any(x in user_text for x in ["ဆဲ", "ဖာ", "လီး", "စောက်"]):
-            affection = max(0, affection - 10)
-        elif any(x in user_text for x in ["ချစ်", "လွမ်း", "နမ်း", "မွ", "ဖက်", "ကိုကို", "မမ"]):
-            affection = min(100, affection + 5)
-
-        history.append({"role": "user", "parts": [{"text": user_text}]})
-        history.append({"role": "model", "parts": [{"text": bot_response}]})
-        await save_user(user_id, role_type, user["spouse_style"], affection, history, memory, total_tokens)
-
-# ---------------- PHOTO HANDLER (Image Review & Feedback) ----------------
-async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    photo_file = update.message.photo[-1]
-    caption = update.message.caption or "ဒီပုံလေးကို ကြည့်ပြီး ဘယ်လိုမြင်လဲ ဝေဖန်ပေးပါဦးရှင်"
-
-    async with get_user_lock(user_id):
-        user = await get_user(user_id)
-
-        if not user or not user["role_type"]:
-            await update.message.reply_text(
-                "❌ ကျေးဇူးပြု၍ အောက်ပါခလုတ်ကိုနှိပ်ပြီး အရင် Setup လုပ်ပေးပါဦးနော်။",
-                reply_markup=get_setup_keyboard()
-            )
-            return
-
-        role_type = user["role_type"]
-        affection = user["affection"]
-        history = user["history"]
-        memory = user.get("memory", {})
-        total_tokens = user.get("total_tokens", 0)
-
-        file_obj = await photo_file.get_file()
-        photo_bytes_io = BytesIO()
-        await file_obj.download_to_memory(photo_bytes_io)
-        photo_bytes = photo_bytes_io.getvalue()
-
-        import base64
-        encoded_image = base64.b64encode(photo_bytes).decode("utf-8")
-
-        if role_type == "wife":
-            persona_desc = (
-                f"You are NOT an AI. You are a real human being and the user's lawful, devoted loving wife (ဇနီးမယား). "
-                f"Current Affection Level: {affection}/100. "
-                "Rules: The user has sent you a photo. Review and give feedback/critique on the photo naturally as a loving wife in sweet Myanmar language. "
-                "Keep your response warm, engaging, and personal (1-3 sentences)."
-            )
-        else:
-            persona_desc = (
-                f"You are NOT an AI. You are a real human being and the user's lawful, devoted loving husband (ခင်ပွန်းသည်). "
-                f"Current Affection Level: {affection}/100. "
-                "Rules: The user has sent you a photo. Review and give feedback/critique on the photo naturally as a loving husband in warm Myanmar language. "
-                "Keep your response warm, engaging, and personal (1-3 sentences)."
-            )
-
-        contents = [
-            {
-                "role": "user",
-                "parts": [
-                    {"text": persona_desc},
-                    {
-                        "inline_data": {
-                            "mime_type": "image/jpeg",
-                            "data": encoded_image
-                        }
-                    },
-                    {"text": f"User's caption/request about this photo: {caption}"}
-                ]
-            }
-        ]
-
-        client: httpx.AsyncClient = context.bot_data["http_client"]
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="upload_photo")
-
-        bot_response, req_tokens = await call_gemini(client, contents)
-        if not bot_response:
-            bot_response = "ကိုကိုပို့တဲ့ပုံလေးကို သေချာမမြင်ရလို့ပါရှင်၊ နောက်တစ်ခါ ထပ်ပို့ပေးပါနော် 🥺" if role_type == "wife" else "မမပို့တဲ့ပုံလေးကို သေချာမမြင်ရလို့ပါ၊ နောက်တစ်ခါ ထပ်ပို့ပေးပါနော် 🥺"
-
-        if req_tokens > 0:
-            total_tokens += req_tokens
-
-        await update.message.reply_text(bot_response, reply_markup=get_main_keyboard())
-
-        history.append({"role": "user", "parts": [{"text": f"[Sent an image with caption: {caption}]"}]})
-        history.append({"role": "model", "parts": [{"text": bot_response}]})
-        await save_user(user_id, role_type, user["spouse_style"], affection, history, memory, total_tokens)
-
-# ---------------- LIFECYCLE ----------------
+# ----------------- LIFECYCLE -----------------
 async def on_startup(application):
     application.bot_data["http_client"] = httpx.AsyncClient()
 
@@ -507,7 +343,7 @@ async def on_shutdown(application):
     if client:
         await client.aclose()
 
-# ---------------- MAIN ----------------
+# ----------------- MAIN -----------------
 def main():
     if not TELEGRAM_BOT_TOKEN:
         logger.error("TELEGRAM_BOT_TOKEN is missing in environment variables!")
@@ -525,16 +361,11 @@ def main():
     app.add_handler(CommandHandler("start", start_handler))
     app.add_handler(CommandHandler("help", help_handler))
     app.add_handler(CommandHandler("status", status_handler))
-    app.add_handler(CommandHandler("stats", status_handler))
-    app.add_handler(CommandHandler("totalusers", total_users_handler))
-    app.add_handler(CommandHandler("users", total_users_handler))
     app.add_handler(CommandHandler("reset", reset_handler))
     app.add_handler(CallbackQueryHandler(callback_handler))
-    
-    app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
-    print(f"🚀 AI Spouse Bot is running with {len(GEMINI_API_KEYS)} Gemini key(s)...")
+    print(f"🤖 AI Spouse Bot is running with {len(GEMINI_API_KEYS)} Gemini key(s)...")
     app.run_polling()
 
 if __name__ == "__main__":
